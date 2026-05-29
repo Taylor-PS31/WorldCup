@@ -900,13 +900,27 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
       })}
       {scoreMode && onScoreChange && !isSlotLabel(teamA) && !isSlotLabel(teamB) && (
         <div className="ko-score-row">
-          <input type="number" min="0" max="99" className="score-input" disabled={locked}
+          <input
+            type="text" inputMode="numeric" pattern="[0-9]*"
+            className="score-input" disabled={locked}
             value={score?.h ?? ''} placeholder="0"
-            onChange={e => !locked && onScoreChange({ ...(score||{}), h: String(e.target.value) })} />
+            onChange={e => {
+              if (locked) return;
+              const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+              onScoreChange({ ...(score||{}), h: v });
+            }}
+          />
           <span className="score-sep">–</span>
-          <input type="number" min="0" max="99" className="score-input" disabled={locked}
+          <input
+            type="text" inputMode="numeric" pattern="[0-9]*"
+            className="score-input" disabled={locked}
             value={score?.a ?? ''} placeholder="0"
-            onChange={e => !locked && onScoreChange({ ...(score||{}), a: String(e.target.value) })} />
+            onChange={e => {
+              if (locked) return;
+              const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+              onScoreChange({ ...(score||{}), a: v });
+            }}
+          />
         </div>
       )}
     </div>
@@ -994,13 +1008,29 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
               <span className="match-team-name home">{home}</span>
               {scoreMode ? (
                 <div className="score-inputs">
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked}
-                    value={res.homeGoals !== undefined && res.homeGoals !== null && res.homeGoals !== '' ? res.homeGoals : ''}
-                    onChange={e => { if (!locked) { const v = e.target.value; onUpdateMatch(groupKey, i, {...res, homeGoals: v === '' ? '' : String(v)}); }}} placeholder="0"/>
+                  <input
+                    type="text" inputMode="numeric" pattern="[0-9]*"
+                    className="score-input" disabled={locked}
+                    value={res.homeGoals ?? ''}
+                    onChange={e => {
+                      if (locked) return;
+                      const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+                      onUpdateMatch(groupKey, i, { ...res, homeGoals: v });
+                    }}
+                    placeholder="0"
+                  />
                   <span className="score-sep">–</span>
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked}
-                    value={res.awayGoals !== undefined && res.awayGoals !== null && res.awayGoals !== '' ? res.awayGoals : ''}
-                    onChange={e => { if (!locked) { const v = e.target.value; onUpdateMatch(groupKey, i, {...res, awayGoals: v === '' ? '' : String(v)}); }}} placeholder="0"/>
+                  <input
+                    type="text" inputMode="numeric" pattern="[0-9]*"
+                    className="score-input" disabled={locked}
+                    value={res.awayGoals ?? ''}
+                    onChange={e => {
+                      if (locked) return;
+                      const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+                      onUpdateMatch(groupKey, i, { ...res, awayGoals: v });
+                    }}
+                    placeholder="0"
+                  />
                 </div>
               ) : (
                 <div className="wdl-btns">
