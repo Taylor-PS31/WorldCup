@@ -155,8 +155,46 @@ function useTournamentPhase() {
 
 // ─── State helpers ─────────────────────────────────────────────────────────────
 
+// Official R32 bracket slot labels — exactly as per the FIFA 2026 bracket image
+// Each match is a pair: [home slot label, away slot label]
+// These show as placeholders until the user builds the bracket from group stage results
+const R32_SLOTS = [
+  // Match 1 (June 29 – Foxborough)
+  'Winner Group E',       '3rd Group A/B/C/D/F',
+  // Match 2 (June 30 – East Rutherford)
+  'Winner Group I',       '3rd Group C/D/F/G/H',
+  // Match 3 (June 28 – Inglewood)
+  'Runner-up Group A',    'Runner-up Group B',
+  // Match 4 (June 29 – Guadalupe)
+  'Winner Group F',       'Runner-up Group C',
+  // Match 5 (July 2 – Toronto)
+  'Runner-up Group K',    'Runner-up Group L',
+  // Match 6 (July 2 – Inglewood)
+  'Winner Group H',       'Runner-up Group J',
+  // Match 7 (July 1 – Santa Clara)
+  'Winner Group D',       '3rd Group B/E/F/I/J',
+  // Match 8 (July 1 – Seattle)
+  'Winner Group G',       '3rd Group A/E/H/I/J',
+  // Match 9 (June 29 – Houston)
+  'Winner Group C',       'Runner-up Group F',
+  // Match 10 (June 30 – Arlington)
+  'Runner-up Group E',    'Runner-up Group I',
+  // Match 11 (June 30 – Mexico City)
+  'Winner Group A',       '3rd Group C/E/F/H/I',
+  // Match 12 (July 1 – Atlanta)
+  'Winner Group L',       '3rd Group E/H/I/J/K',
+  // Match 13 (July 3 – Miami Gardens)
+  'Winner Group J',       'Runner-up Group H',
+  // Match 14 (July 3 – Arlington)
+  'Runner-up Group D',    'Runner-up Group G',
+  // Match 15 (July 2 – Vancouver)
+  'Winner Group B',       '3rd Group E/F/G/I/J',
+  // Match 16 (July 3 – Kansas City)
+  'Winner Group K',       '3rd Group D/E/I/J/L',
+];
+
 const emptyKO = () => ({
-  r32: Array(32).fill('TBD'),
+  r32: [...R32_SLOTS],   // pre-filled with official slot labels
   r16: Array(16).fill('TBD'),
   qf:  Array(8).fill('TBD'),
   sf:  Array(4).fill('TBD'),
@@ -164,8 +202,6 @@ const emptyKO = () => ({
   third: ['TBD', 'TBD'],
   winner: 'TBD',
   thirdPlace: 'TBD',
-  // koScores: { 'r32-0': {h:'',a:''}, 'r16-3': {h:'2',a:'1'}, ... }
-  // key = `${roundKey}-${matchIndex}`
   koScores: {},
 });
 
@@ -182,7 +218,7 @@ const emptyLockState = () => ({
 
 // Bump this number whenever the shape of saved data changes in a breaking way.
 // The migrate() function below must handle upgrading from all previous versions.
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 2;
 const STORAGE_KEY = 'wc2026_save';
 
 // Deep-merge defaults into a loaded object so new fields added in updates
@@ -193,24 +229,39 @@ function applyDefaults(loaded, defaults) {
   if (typeof loaded === 'object' && loaded !== null && !Array.isArray(loaded)) {
     Object.keys(loaded).forEach(k => {
       if (k in defaults) result[k] = applyDefaults(loaded[k], defaults[k]);
-      else result[k] = loaded[k]; // keep extra keys from saved data
+      else result[k] = loaded[k];
     });
   }
   return result;
 }
 
-// Migrate saved data from an older version to the current one.
-// Add a new 'case' here whenever SAVE_VERSION is bumped.
 function migrate(saved) {
   let data = saved;
-  // v0 → v1: koScores was added to knockout state
-  if (data.version < 1) {
+  // v0 → v1: koScores added to knockout
+  if ((data.version || 0) < 1) {
     const fixKO = (ko) => ({ ...emptyKO(), ...ko, koScores: ko.koScores || {} });
     data = {
       ...data,
       prediction: { ...data.prediction, knockout: fixKO(data.prediction?.knockout || {}) },
       actual:     { ...data.actual,     knockout: fixKO(data.actual?.knockout     || {}) },
       version: 1,
+    };
+  }
+  // v1 → v2: r32 now pre-filled with official slot labels instead of 'TBD'
+  // Only replace slots that are still 'TBD' — leave any real team names untouched
+  if ((data.version || 0) < 2) {
+    const upgradeR32 = (ko) => {
+      const r32 = [...(ko.r32 || emptyKO().r32)];
+      R32_SLOTS.forEach((label, i) => {
+        if (r32[i] === 'TBD') r32[i] = label;
+      });
+      return { ...ko, r32 };
+    };
+    data = {
+      ...data,
+      prediction: { ...data.prediction, knockout: upgradeR32(data.prediction?.knockout || {}) },
+      actual:     { ...data.actual,     knockout: upgradeR32(data.actual?.knockout     || {}) },
+      version: 2,
     };
   }
   return data;
@@ -808,20 +859,34 @@ function AutoFetcher({ apiKey, onFetch }) {
 
 // ─── Shared match slot ────────────────────────────────────────────────────────
 
+// A slot label is a placeholder like "Winner Group A" — not a real team yet
+const isSlotLabel = (team) =>
+  !team ||
+  team === 'TBD' ||
+  team.startsWith('Winner Group') ||
+  team.startsWith('Runner-up Group') ||
+  team.startsWith('3rd Group');
+
 function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, score, onScoreChange }) {
   return (
     <div className="match-slot">
       {label && <div className="match-label">{label}</div>}
-      {[teamA, teamB].map((team, i) => (
-        <div key={i}
-          className={`match-team ${team !== 'TBD' && onSelectWinner && !locked ? 'clickable' : ''} ${locked ? 'locked-slot' : ''}`}
-          style={{ borderTop: i === 1 ? '0.5px solid rgba(0,0,0,0.08)' : 'none' }}
-          onClick={() => !locked && team !== 'TBD' && onSelectWinner && onSelectWinner(team)}
-        >
-          <span className="team-name">{team === 'TBD' ? <span className="team-tbd">TBD</span> : team}</span>
-        </div>
-      ))}
-      {scoreMode && onScoreChange && (
+      {[teamA, teamB].map((team, i) => {
+        const isLabel = isSlotLabel(team);
+        const clickable = !isLabel && onSelectWinner && !locked;
+        return (
+          <div key={i}
+            className={`match-team ${clickable ? 'clickable' : ''} ${locked ? 'locked-slot' : ''}`}
+            style={{ borderTop: i === 1 ? '0.5px solid rgba(0,0,0,0.08)' : 'none' }}
+            onClick={() => clickable && onSelectWinner(team)}
+          >
+            {isLabel
+              ? <span className="team-slot-label">{team || 'TBD'}</span>
+              : <span className="team-name">{team}</span>}
+          </div>
+        );
+      })}
+      {scoreMode && onScoreChange && !isSlotLabel(teamA) && !isSlotLabel(teamB) && (
         <div className="ko-score-row">
           <input type="number" min="0" max="99" className="score-input" disabled={locked}
             value={score?.h ?? ''} placeholder="0"
@@ -967,9 +1032,12 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
 
   const handleBuild = () => {
     const qSource = groupMode === 'advanced' ? getAdvQ() : q;
-    const p = (g,i) => (qSource[g]||[])[i]||'TBD';
-    const slots = [];
-    GROUP_KEYS.forEach(g => { slots.push(p(g,0)); slots.push(p(g,1)); });
+
+    // Get ranked teams per group
+    const winner   = (g) => (qSource[g]||[])[0] || R32_SLOTS[0]; // fallback to label if not set
+    const runnerUp = (g) => (qSource[g]||[])[1] || R32_SLOTS[1];
+
+    // Get best 8 third-place teams, sorted by pts then GD
     let thirds = [];
     if (groupMode === 'advanced') {
       const tl = [];
@@ -980,8 +1048,21 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
       GROUP_KEYS.forEach(g => { if((q[g]||[])[2]) thirds.push(q[g][2]); });
     }
     while (thirds.length < 8) thirds.push('TBD');
-    const r32 = [...slots, ...thirds.slice(0,8)];
-    while (r32.length < 32) r32.push('TBD');
+
+    // Map slot labels to actual teams
+    // Third-place slots are assigned in order of the bracket (top to bottom)
+    // The slot labels tell us which pool they come from but the actual
+    // assignment is positional — best 3rd goes to first 3rd slot, etc.
+    const thirdSlotOrder = [0,1,2,3,4,5,6,7]; // indices into thirds[]
+    let thirdIdx = 0;
+    const getTeam = (label) => {
+      if (label.startsWith('Winner Group '))   return winner(label.slice(-1));
+      if (label.startsWith('Runner-up Group ')) return runnerUp(label.slice(-1));
+      if (label.startsWith('3rd Group '))       return thirds[thirdIdx++] || 'TBD';
+      return label; // already a team name
+    };
+
+    const r32 = R32_SLOTS.map(label => getTeam(label));
     onBuildKnockout(r32);
   };
 
