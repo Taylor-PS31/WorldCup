@@ -1,0 +1,26 @@
+{
+  "short_name": "World Cup",
+  "name": "World Cup",
+  "description": "Predict and track the FIFA World Cup",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#1a3c5e",
+  "background_color": "#f4f5f7",
+  "categories": ["sports", "games"],
+  "lang": "en-GB"
+}
