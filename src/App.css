@@ -1,5 +1,5 @@
 /* ── Layout ── */
-.app { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+.app { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; overflow-x: hidden; }
 
 /* ── Hero ── */
 .hero { display: flex; align-items: center; gap: 16px; background: linear-gradient(135deg, #1a3c5e, #0d2238); border-radius: 12px; padding: 20px 24px; margin-bottom: 18px; color: #fff; }
