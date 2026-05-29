@@ -1036,43 +1036,130 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
       onSelectWinner={t=>advSF(s*2,t)} locked={isRoundLocked('sf')}
       scoreMode={scoreMode} score={getScore('sf',s)} onScoreChange={v=>updateScore('sf',s,v)}/>, gap:0 }];
 
+  // Build all matches for a given round as a flat list
+  const allMatches = (roundKey, count, teamsFn, advFn, gap) =>
+    Array.from({length: count}, (_, i) => {
+      const [a, b] = teamsFn(i);
+      return { node: <MatchSlot teamA={a} teamB={b} label={`${roundKey.toUpperCase()} ${i+1}`}
+        onSelectWinner={t => advFn(i, t)} locked={isRoundLocked(roundKey)}
+        scoreMode={scoreMode} score={getScore(roundKey, i)} onScoreChange={v=>updateScore(roundKey,i,v)}/>, gap };
+    });
+
+  const ROUND_DEFS = [
+    { key: 'r32',   label: 'R32',    fullLabel: 'Round of 32',    count: 16, left: mkR32(0), right: mkR32(1) },
+    { key: 'r16',   label: 'R16',    fullLabel: 'Round of 16',    count: 8,  left: mkR16(0), right: mkR16(1) },
+    { key: 'qf',    label: 'QF',     fullLabel: 'Quarter-finals', count: 4,  left: mkQF(0),  right: mkQF(1)  },
+    { key: 'sf',    label: 'SF',     fullLabel: 'Semi-finals',    count: 2,  left: mkSF(0),  right: mkSF(1)  },
+    { key: 'final', label: 'Final',  fullLabel: 'Final & 3rd',    count: 1,  left: [], right: [] },
+  ];
+
+  const [mobileRound, setMobileRound] = useState('r32');
+
+  const MobileView = () => {
+    const rd = ROUND_DEFS.find(r => r.key === mobileRound);
+    const matches = rd.key === 'final'
+      ? []
+      : [...rd.left, ...rd.right];
+
+    return (
+      <div>
+        {/* Round selector pills */}
+        <div className="mobile-round-nav">
+          {ROUND_DEFS.map(r => (
+            <button key={r.key}
+              className={`mobile-round-btn ${mobileRound === r.key ? 'active' : ''} ${isRoundLocked(r.key) ? 'locked' : ''}`}
+              onClick={() => setMobileRound(r.key)}>
+              {r.label}
+              {isRoundLocked(r.key) && ' 🔒'}
+            </button>
+          ))}
+        </div>
+
+        <div className="mobile-round-title">{rd.fullLabel}</div>
+
+        {rd.key === 'final' ? (
+          <div className="mobile-final-grid">
+            <div>
+              <div className="ko-col-label" style={{textAlign:'left',marginBottom:8}}>🏆 Final</div>
+              <MatchSlot teamA={ko.final[0]} teamB={ko.final[1]} label="🏆 Final" onSelectWinner={advFinal} locked={isRoundLocked('final')}
+                scoreMode={scoreMode} score={getScore('final',0)} onScoreChange={v=>updateScore('final',0,v)}/>
+              {ko.winner !== 'TBD' && (
+                <div className="champion-box" style={{marginTop:10}}>
+                  <div className="champ-trophy">🏆</div>
+                  <div className="champ-label">CHAMPION</div>
+                  <div className="champ-team">{ko.winner}</div>
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="ko-col-label third-label" style={{textAlign:'left',marginBottom:8}}>🥉 3rd Place</div>
+              <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
+                scoreMode={scoreMode} score={getScore('third',0)} onScoreChange={v=>updateScore('third',0,v)}/>
+              {ko.thirdPlace !== 'TBD' && (
+                <div className="third-box" style={{marginTop:10}}>
+                  <div className="champ-trophy">🥉</div>
+                  <div className="champ-label">3RD PLACE</div>
+                  <div className="champ-team">{ko.thirdPlace}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mobile-matches-grid">
+            {matches.map((m, i) => <div key={i}>{m.node}</div>)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div>
       <p className="ko-hint">Click a team to advance them. SF losers auto-fill the 3rd place playoff.{lockedRounds?.size > 0 && ' 🔒 Locked rounds shown in grey.'}</p>
-      <div className="ko-scroll">
-        <div className="ko-bracket">
-          {renderCol('Round of 32', mkR32(0), 0)}
-          {renderCol('Round of 16', mkR16(0), mt1)}
-          {renderCol('Quarter-finals', mkQF(0), mt2)}
-          {renderCol('Semi-finals', mkSF(0), mt3)}
-          <div className="ko-col ko-centre">
-            <div style={{height:mt4}}/>
-            <div className="ko-col-label">Final</div>
-            <MatchSlot teamA={ko.final[0]} teamB={ko.final[1]} label="🏆 Final" onSelectWinner={advFinal} locked={isRoundLocked('final')}
-              scoreMode={scoreMode} score={getScore('final',0)} onScoreChange={v=>updateScore('final',0,v)}/>
-            <div className="champion-box">
-              <div className="champ-trophy">🏆</div>
-              <div className="champ-label">CHAMPION</div>
-              <div className="champ-team">{ko.winner==='TBD'?<em>TBD</em>:ko.winner}</div>
-            </div>
-            <div style={{height:20}}/>
-            <div className="ko-col-label third-label">3rd Place</div>
-            <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
-              scoreMode={scoreMode} score={getScore('third',0)} onScoreChange={v=>updateScore('third',0,v)}/>
-            {ko.thirdPlace !== 'TBD' && (
-              <div className="third-box">
-                <div className="champ-trophy">🥉</div>
-                <div className="champ-label">3RD PLACE</div>
-                <div className="champ-team">{ko.thirdPlace}</div>
+
+      {/* Desktop: full side-by-side bracket */}
+      <div className="ko-desktop">
+        <div className="ko-scroll">
+          <div className="ko-bracket">
+            {renderCol('Round of 32', mkR32(0), 0)}
+            {renderCol('Round of 16', mkR16(0), mt1)}
+            {renderCol('Quarter-finals', mkQF(0), mt2)}
+            {renderCol('Semi-finals', mkSF(0), mt3)}
+            <div className="ko-col ko-centre">
+              <div style={{height:mt4}}/>
+              <div className="ko-col-label">Final</div>
+              <MatchSlot teamA={ko.final[0]} teamB={ko.final[1]} label="🏆 Final" onSelectWinner={advFinal} locked={isRoundLocked('final')}
+                scoreMode={scoreMode} score={getScore('final',0)} onScoreChange={v=>updateScore('final',0,v)}/>
+              <div className="champion-box">
+                <div className="champ-trophy">🏆</div>
+                <div className="champ-label">CHAMPION</div>
+                <div className="champ-team">{ko.winner==='TBD'?<em>TBD</em>:ko.winner}</div>
               </div>
-            )}
+              <div style={{height:20}}/>
+              <div className="ko-col-label third-label">3rd Place</div>
+              <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
+                scoreMode={scoreMode} score={getScore('third',0)} onScoreChange={v=>updateScore('third',0,v)}/>
+              {ko.thirdPlace !== 'TBD' && (
+                <div className="third-box">
+                  <div className="champ-trophy">🥉</div>
+                  <div className="champ-label">3RD PLACE</div>
+                  <div className="champ-team">{ko.thirdPlace}</div>
+                </div>
+              )}
+            </div>
+            {renderCol('Semi-finals', mkSF(1), mt3)}
+            {renderCol('Quarter-finals', mkQF(1), mt2)}
+            {renderCol('Round of 16', mkR16(1), mt1)}
+            {renderCol('Round of 32', mkR32(1), 0)}
           </div>
-          {renderCol('Semi-finals', mkSF(1), mt3)}
-          {renderCol('Quarter-finals', mkQF(1), mt2)}
-          {renderCol('Round of 16', mkR16(1), mt1)}
-          {renderCol('Round of 32', mkR32(1), 0)}
         </div>
       </div>
+
+      {/* Mobile: round-by-round view */}
+      <div className="ko-mobile">
+        <MobileView />
+      </div>
+
       {(ko.winner !== 'TBD' || ko.thirdPlace !== 'TBD') && (
         <div className="result-banner">
           {ko.winner !== 'TBD' && <div className="result-item"><span>🏆</span><div><div className="result-label">CHAMPION</div><div className="result-team">{ko.winner}</div></div></div>}
