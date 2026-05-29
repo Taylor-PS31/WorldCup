@@ -317,9 +317,12 @@ function calcStandings(groupKey, matchResultsForGroup) {
     // Use Number() instead of parseInt() so '0' and 0 both parse correctly
     // Also check the raw value isn't an empty string before parsing
     const hgRaw = res.homeGoals, agRaw = res.awayGoals;
-    const hg = (hgRaw !== '' && hgRaw !== null && hgRaw !== undefined) ? Number(hgRaw) : NaN;
-    const ag = (agRaw !== '' && agRaw !== null && agRaw !== undefined) ? Number(agRaw) : NaN;
-    const hasScores = !isNaN(hg) && !isNaN(ag);
+    // Only count if BOTH scores are explicitly set (not empty string, null or undefined)
+    const hgValid = hgRaw !== '' && hgRaw !== null && hgRaw !== undefined;
+    const agValid = agRaw !== '' && agRaw !== null && agRaw !== undefined;
+    const hg = hgValid ? Number(hgRaw) : NaN;
+    const ag = agValid ? Number(agRaw) : NaN;
+    const hasScores = hgValid && agValid && !isNaN(hg) && !isNaN(ag);
     if (hasScores) {
       stats[home].gf += hg; stats[home].ga += ag;
       stats[away].gf += ag; stats[away].ga += hg;
@@ -991,9 +994,13 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
               <span className="match-team-name home">{home}</span>
               {scoreMode ? (
                 <div className="score-inputs">
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.homeGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,homeGoals:String(e.target.value)})} placeholder="0"/>
+                  <input type="number" min="0" max="99" className="score-input" disabled={locked}
+                    value={res.homeGoals !== undefined && res.homeGoals !== null && res.homeGoals !== '' ? res.homeGoals : ''}
+                    onChange={e => { if (!locked) { const v = e.target.value; onUpdateMatch(groupKey, i, {...res, homeGoals: v === '' ? '' : String(v)}); }}} placeholder="0"/>
                   <span className="score-sep">–</span>
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.awayGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,awayGoals:String(e.target.value)})} placeholder="0"/>
+                  <input type="number" min="0" max="99" className="score-input" disabled={locked}
+                    value={res.awayGoals !== undefined && res.awayGoals !== null && res.awayGoals !== '' ? res.awayGoals : ''}
+                    onChange={e => { if (!locked) { const v = e.target.value; onUpdateMatch(groupKey, i, {...res, awayGoals: v === '' ? '' : String(v)}); }}} placeholder="0"/>
                 </div>
               ) : (
                 <div className="wdl-btns">
