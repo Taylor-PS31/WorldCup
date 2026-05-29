@@ -33,7 +33,7 @@ const KO_ROUNDS = [
   { key: 'sf',  label: 'Semi-finals',    matchCount: 2  },
 ];
 
-// football-data.org competition ID for World Cup
+// football-data.org competition ID for World Cup 2026
 const FDORG_COMP = 2000;
 
 // ─── Tournament schedule (all times stored as UTC, converted from BST = UTC+1) ──
@@ -342,7 +342,7 @@ async function fetchActualResults(apiKey) {
     );
     if (!resp.ok) {
       if (resp.status === 401) return { error: 'Invalid API key. Check your football-data.org key.' };
-      if (resp.status === 404) return { error: 'World Cup data not yet available on football-data.org.' };
+      if (resp.status === 404) return { error: 'World Cup 2026 data not yet available on football-data.org.' };
       return { error: `API error ${resp.status}` };
     }
     const data = await resp.json();
@@ -414,7 +414,7 @@ function ScoringGuide() {
             <div className="sg-heading">🔒 Lock &amp; penalty system</div>
             <div className="sg-rows">
               <div className="sg-row"><span className="sg-pts sg-zero">−1pt</span><span>Each slot changed when you use <em>Fill from actual results</em> during a free-edit window</span></div>
-              <div className="sg-note">You can lock and unlock freely before the tournament and in between each round. Once the first match of each round kicks off, everything locks automatically until the end of the current round.</div>
+              <div className="sg-note">You can lock and unlock freely before the tournament. Once the first match kicks off on 11 Jun 2026, everything locks automatically and permanently.</div>
             </div>
           </div>
         </div>
@@ -665,7 +665,7 @@ function TournamentStatusBanner({ tournPhase, lockedStages, lockState, onUserLoc
               Tournament complete — all predictions locked
               {penaltyPoints > 0 && <span className="penalty-badge">−{penaltyPoints}pts penalty</span>}
             </div>
-            <div className="lock-sub">The World Cup is over. Check the analysis tab to see how you did!</div>
+            <div className="lock-sub">The World Cup 2026 is over. Check the analysis tab to see how you did!</div>
           </div>
         </div>
       </div>
@@ -946,7 +946,7 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
 
 // ─── Knockout Stage ────────────────────────────────────────────────────────────
 
-function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode }) {
+function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode, isPenaltyActive }) {
   const ko = knockout;
 
   const updateScore = (roundKey, matchIdx, val) => {
@@ -955,11 +955,13 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode 
     onUpdate({ ...ko, koScores: newScores });
   };
 
+  // advanceTeam: matchIdx is the MATCH number (0-15 for R32), not the slot index
+  // The winner slot for match i is ko[roundKey][i] — the winner advances, stored as one team per match
   const advanceTeam = (roundKey, matchIdx, team) => {
     const isLocked = lockedRounds && lockedRounds.has(roundKey);
     if (isLocked) return;
     const prev = ko[roundKey][matchIdx];
-    if (prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
+    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     const arr = [...ko[roundKey]];
     arr[matchIdx] = team;
     onUpdate({ ...ko, [roundKey]: arr });
@@ -968,7 +970,7 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode 
   const advSF = (mi, team) => {
     if (lockedRounds?.has('sf')) return;
     const prev = ko.sf[mi];
-    if (prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
+    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     const sf = [...ko.sf]; sf[mi] = team;
     const other = mi % 2 === 0 ? mi + 1 : mi - 1;
     const loser = [ko.sf[mi], ko.sf[other]].find(x => x !== team && x !== 'TBD') || 'TBD';
@@ -981,20 +983,20 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode 
   const advFinal = (team) => {
     if (lockedRounds?.has('final')) return;
     const prev = ko.winner;
-    if (prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
+    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     onUpdate({ ...ko, winner: team });
   };
 
   const advThird = (team) => {
     const prev = ko.thirdPlace;
-    if (prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
+    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     onUpdate({ ...ko, thirdPlace: team });
   };
 
   const isRoundLocked = (key) => lockedRounds?.has(key) || false;
   const getScore = (roundKey, matchIdx) => (ko.koScores || {})[`${roundKey}-${matchIdx}`];
 
-  const matchH = scoreMode ? 100 : 80; // taller when score inputs shown
+  const matchH = scoreMode ? 100 : 80;
   const gap0 = 6;
   const gap1 = (matchH+gap0)*2-matchH, gap2 = (matchH+gap1)*2-matchH, gap3 = (matchH+gap2)*2-matchH;
   const mt1 = (matchH+gap0)/2, mt2 = mt1+(matchH+gap1)/2, mt3 = mt2+(matchH+gap2)/2, mt4 = mt3+(matchH+gap3)/2;
@@ -1008,22 +1010,25 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode 
     </div>
   );
 
+  // mi = match index; teamA = ko[round][mi*2], teamB = ko[round][mi*2+1]
+  // winner stored at ko[round][mi] — but wait, the r16 advancers array has 16 slots for 16 matches
+  // Each match i: teamA = r32[i*2], teamB = r32[i*2+1], winner stored at r16[i]
   const mkR32 = (s) => Array.from({length:8},(_,i) => {
     const mi=s*8+i; const lk=isRoundLocked('r32');
     return { node:<MatchSlot teamA={ko.r32[mi*2]} teamB={ko.r32[mi*2+1]} label={`R32 ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('r32',mi*2,t)} locked={lk}
+      onSelectWinner={t=>advanceTeam('r16',mi,t)} locked={lk}
       scoreMode={scoreMode} score={getScore('r32',mi)} onScoreChange={v=>updateScore('r32',mi,v)}/>, gap:gap0 };
   });
   const mkR16 = (s) => Array.from({length:4},(_,i) => {
     const mi=s*4+i; const lk=isRoundLocked('r16');
     return { node:<MatchSlot teamA={ko.r16[mi*2]} teamB={ko.r16[mi*2+1]} label={`R16 ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('r16',mi*2,t)} locked={lk}
+      onSelectWinner={t=>advanceTeam('qf',mi,t)} locked={lk}
       scoreMode={scoreMode} score={getScore('r16',mi)} onScoreChange={v=>updateScore('r16',mi,v)}/>, gap:gap1 };
   });
   const mkQF = (s) => Array.from({length:2},(_,i) => {
     const mi=s*2+i; const lk=isRoundLocked('qf');
     return { node:<MatchSlot teamA={ko.qf[mi*2]} teamB={ko.qf[mi*2+1]} label={`QF ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('qf',mi*2,t)} locked={lk}
+      onSelectWinner={t=>advanceTeam('sf',mi,t)} locked={lk}
       scoreMode={scoreMode} score={getScore('qf',mi)} onScoreChange={v=>updateScore('qf',mi,v)}/>, gap:gap2 };
   });
   const mkSF = (s) => [{
@@ -1180,7 +1185,7 @@ export default function App() {
       <div className="hero">
         <span className="hero-icon">⚽</span>
         <div>
-          <div className="hero-title">FIFA World Cup</div>
+          <div className="hero-title">FIFA World Cup 2026</div>
           <div className="hero-sub">48 teams · 12 groups · R32 → R16 → QF → SF → Final + 3rd place</div>
         </div>
       </div>
@@ -1273,6 +1278,7 @@ export default function App() {
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
                 lockedRounds={activeTab === 'prediction' ? koLockedRounds : new Set()}
                 onPenalty={activeTab === 'prediction' ? handlePenalty : null}
+                isPenaltyActive={activeTab === 'prediction' && getTournamentPhase().phase === 'window'}
                 scoreMode={scoreMode} />
             )}
           </div>
