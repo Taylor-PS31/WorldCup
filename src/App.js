@@ -224,7 +224,10 @@ const STORAGE_KEY = 'wc2026_save';
 // Deep-merge defaults into a loaded object so new fields added in updates
 // are always present, even if the saved data predates them.
 function applyDefaults(loaded, defaults) {
-  if (typeof defaults !== 'object' || defaults === null || Array.isArray(defaults)) return loaded ?? defaults;
+  // Primitive or array — return loaded value as-is if it exists (including 0, false, '')
+  if (typeof defaults !== 'object' || defaults === null || Array.isArray(defaults)) {
+    return (loaded !== null && loaded !== undefined) ? loaded : defaults;
+  }
   const result = { ...defaults };
   if (typeof loaded === 'object' && loaded !== null && !Array.isArray(loaded)) {
     Object.keys(loaded).forEach(k => {
@@ -896,11 +899,11 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
         <div className="ko-score-row">
           <input type="number" min="0" max="99" className="score-input" disabled={locked}
             value={score?.h ?? ''} placeholder="0"
-            onChange={e => !locked && onScoreChange({ ...(score||{}), h: e.target.value })} />
+            onChange={e => !locked && onScoreChange({ ...(score||{}), h: String(e.target.value) })} />
           <span className="score-sep">–</span>
           <input type="number" min="0" max="99" className="score-input" disabled={locked}
             value={score?.a ?? ''} placeholder="0"
-            onChange={e => !locked && onScoreChange({ ...(score||{}), a: e.target.value })} />
+            onChange={e => !locked && onScoreChange({ ...(score||{}), a: String(e.target.value) })} />
         </div>
       )}
     </div>
@@ -988,9 +991,9 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
               <span className="match-team-name home">{home}</span>
               {scoreMode ? (
                 <div className="score-inputs">
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.homeGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,homeGoals:e.target.value})} placeholder="0"/>
+                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.homeGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,homeGoals:String(e.target.value)})} placeholder="0"/>
                   <span className="score-sep">–</span>
-                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.awayGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,awayGoals:e.target.value})} placeholder="0"/>
+                  <input type="number" min="0" max="99" className="score-input" disabled={locked} value={res.awayGoals??''} onChange={e=>!locked&&onUpdateMatch(groupKey,i,{...res,awayGoals:String(e.target.value)})} placeholder="0"/>
                 </div>
               ) : (
                 <div className="wdl-btns">
