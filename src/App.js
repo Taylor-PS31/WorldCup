@@ -311,7 +311,11 @@ function calcStandings(groupKey, matchResultsForGroup) {
     const res = (matchResultsForGroup || {})[i];
     if (!res) return;
     const [home, away] = match;
-    const hg = parseInt(res.homeGoals), ag = parseInt(res.awayGoals);
+    // Use Number() instead of parseInt() so '0' and 0 both parse correctly
+    // Also check the raw value isn't an empty string before parsing
+    const hgRaw = res.homeGoals, agRaw = res.awayGoals;
+    const hg = (hgRaw !== '' && hgRaw !== null && hgRaw !== undefined) ? Number(hgRaw) : NaN;
+    const ag = (agRaw !== '' && agRaw !== null && agRaw !== undefined) ? Number(agRaw) : NaN;
     const hasScores = !isNaN(hg) && !isNaN(ag);
     if (hasScores) {
       stats[home].gf += hg; stats[home].ga += ag;
@@ -339,7 +343,9 @@ function ord(n) {
 
 function getOutcome(res) {
   if (!res) return { outcome: '', hg: null, ag: null };
-  const hg = parseInt(res.homeGoals), ag = parseInt(res.awayGoals);
+  const hgRaw = res.homeGoals, agRaw = res.awayGoals;
+  const hg = (hgRaw !== '' && hgRaw !== null && hgRaw !== undefined) ? Number(hgRaw) : NaN;
+  const ag = (agRaw !== '' && agRaw !== null && agRaw !== undefined) ? Number(agRaw) : NaN;
   if (!isNaN(hg) && !isNaN(ag)) {
     return { outcome: hg > ag ? 'home' : hg < ag ? 'away' : 'draw', hg, ag };
   }
