@@ -139,12 +139,6 @@ function getLockedStages(now = new Date()) {
   return locked;
 }
 
-// Is the free-edit window open for a given stage? (after that stage ends, before next begins)
-function isEditWindowOpen(stage, now = new Date()) {
-  const tp = getTournamentPhase(now);
-  return tp.phase === 'window' && tp.completedStage === stage;
-}
-
 // Hook that re-evaluates phase every 30 seconds
 function useTournamentPhase() {
   const [now, setNow] = useState(new Date());
@@ -183,6 +177,76 @@ const emptyLockState = () => ({
   penaltyPoints: 0,        // cumulative penalty for fill-from-actual changes
   windowAcknowledged: {},  // { r32: true } — user has acknowledged the fill prompt for each stage
 });
+
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
+// Bump this number whenever the shape of saved data changes in a breaking way.
+// The migrate() function below must handle upgrading from all previous versions.
+const SAVE_VERSION = 1;
+const STORAGE_KEY = 'wc2026_save';
+
+// Deep-merge defaults into a loaded object so new fields added in updates
+// are always present, even if the saved data predates them.
+function applyDefaults(loaded, defaults) {
+  if (typeof defaults !== 'object' || defaults === null || Array.isArray(defaults)) return loaded ?? defaults;
+  const result = { ...defaults };
+  if (typeof loaded === 'object' && loaded !== null && !Array.isArray(loaded)) {
+    Object.keys(loaded).forEach(k => {
+      if (k in defaults) result[k] = applyDefaults(loaded[k], defaults[k]);
+      else result[k] = loaded[k]; // keep extra keys from saved data
+    });
+  }
+  return result;
+}
+
+// Migrate saved data from an older version to the current one.
+// Add a new 'case' here whenever SAVE_VERSION is bumped.
+function migrate(saved) {
+  let data = saved;
+  // v0 → v1: koScores was added to knockout state
+  if (data.version < 1) {
+    const fixKO = (ko) => ({ ...emptyKO(), ...ko, koScores: ko.koScores || {} });
+    data = {
+      ...data,
+      prediction: { ...data.prediction, knockout: fixKO(data.prediction?.knockout || {}) },
+      actual:     { ...data.actual,     knockout: fixKO(data.actual?.knockout     || {}) },
+      version: 1,
+    };
+  }
+  return data;
+}
+
+function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    let saved = JSON.parse(raw);
+    // Run migrations if needed
+    if (saved.version < SAVE_VERSION) saved = migrate(saved);
+    // Apply defaults so any fields added since save are present
+    const defaultSave = {
+      prediction:     emptyData(),
+      actual:         emptyData(),
+      lockState:      emptyLockState(),
+      predGroupMode:  'simple',
+      actGroupMode:   'simple',
+      predScoreMode:  false,
+      actScoreMode:   false,
+    };
+    return applyDefaults(saved, defaultSave);
+  } catch (e) {
+    console.warn('Failed to load saved data:', e);
+    return null;
+  }
+}
+
+function saveToStorage(state) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, version: SAVE_VERSION }));
+  } catch (e) {
+    console.warn('Failed to save data:', e);
+  }
+}
 
 // ─── Standings calculation ─────────────────────────────────────────────────────
 
@@ -289,7 +353,7 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints) {
       const correct = pw === aw;
 
       // Score bonus (only if both sides have scores entered for this match)
-      const scoreKey = `${key}-${Math.floor(i / 2)}`; // one score per match (pair of slots)
+      const scoreKey = `${key}-${i}`; // one score per advancing slot
       const ps = (prediction.knockout.koScores || {})[scoreKey];
       const as = (actual.knockout.koScores     || {})[scoreKey];
       const ph = parseInt(ps?.h), pa2 = parseInt(ps?.a);
@@ -297,12 +361,10 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints) {
       const hasScores = !isNaN(ph) && !isNaN(pa2) && !isNaN(ah) && !isNaN(aa);
       const exactScore = hasScores && ph === ah && pa2 === aa;
 
-      if (advancedMatchMode === 'score' && hasScores && i % 2 === 0) {
-        // Score match item — covers both teams in the match (only add once per match)
-        const winner = pw === aw ? pw : null;
+      if (advancedMatchMode === 'score' && hasScores) {
         add({
           category: `${label} Score`, group: null,
-          description: `${prediction.knockout[key][i]} vs ${prediction.knockout[key][i+1]} — predicted ${ph}–${pa2}, actual ${ah}–${aa}`,
+          description: `Match ${i+1} — predicted ${ph}–${pa2}, actual ${ah}–${aa}`,
           correct: exactScore, exactMatch: exactScore,
           earned: exactScore ? 3 : 0, possible: 3,
         });
@@ -414,7 +476,7 @@ function ScoringGuide() {
             <div className="sg-heading">🔒 Lock &amp; penalty system</div>
             <div className="sg-rows">
               <div className="sg-row"><span className="sg-pts sg-zero">−1pt</span><span>Each slot changed when you use <em>Fill from actual results</em> during a free-edit window</span></div>
-              <div className="sg-note">You can lock and unlock freely before the tournament. Once the first match kicks off on 11 Jun 2026, everything locks automatically and permanently.</div>
+              <div className="sg-note">You can lock and unlock freely before the tournament and in between each round. Once the first match of each round kicks off, everything locks automatically until the end of the current round.</div>
             </div>
           </div>
         </div>
@@ -880,7 +942,7 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
 
 // ─── Group Stage wrapper ───────────────────────────────────────────────────────
 
-function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, groupMode, scoreMode, onToggleScoreMode, locked }) {
+function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, groupMode, scoreMode, locked }) {
   const q = data.qualifiers;
   const getAdvQ = () => {
     const d = {};
@@ -1036,82 +1098,19 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
       onSelectWinner={t=>advSF(s*2,t)} locked={isRoundLocked('sf')}
       scoreMode={scoreMode} score={getScore('sf',s)} onScoreChange={v=>updateScore('sf',s,v)}/>, gap:0 }];
 
-  // Build all matches for a given round as a flat list
-  const allMatches = (roundKey, count, teamsFn, advFn, gap) =>
-    Array.from({length: count}, (_, i) => {
-      const [a, b] = teamsFn(i);
-      return { node: <MatchSlot teamA={a} teamB={b} label={`${roundKey.toUpperCase()} ${i+1}`}
-        onSelectWinner={t => advFn(i, t)} locked={isRoundLocked(roundKey)}
-        scoreMode={scoreMode} score={getScore(roundKey, i)} onScoreChange={v=>updateScore(roundKey,i,v)}/>, gap };
-    });
+  // Build all matches for a given round as a flat list — unused but kept for future use
 
   const ROUND_DEFS = [
-    { key: 'r32',   label: 'R32',    fullLabel: 'Round of 32',    count: 16, left: mkR32(0), right: mkR32(1) },
-    { key: 'r16',   label: 'R16',    fullLabel: 'Round of 16',    count: 8,  left: mkR16(0), right: mkR16(1) },
-    { key: 'qf',    label: 'QF',     fullLabel: 'Quarter-finals', count: 4,  left: mkQF(0),  right: mkQF(1)  },
-    { key: 'sf',    label: 'SF',     fullLabel: 'Semi-finals',    count: 2,  left: mkSF(0),  right: mkSF(1)  },
-    { key: 'final', label: 'Final',  fullLabel: 'Final & 3rd',    count: 1,  left: [], right: [] },
+    { key: 'r32',   label: 'R32',   fullLabel: 'Round of 32',    left: mkR32(0), right: mkR32(1) },
+    { key: 'r16',   label: 'R16',   fullLabel: 'Round of 16',    left: mkR16(0), right: mkR16(1) },
+    { key: 'qf',    label: 'QF',    fullLabel: 'Quarter-finals', left: mkQF(0),  right: mkQF(1)  },
+    { key: 'sf',    label: 'SF',    fullLabel: 'Semi-finals',    left: mkSF(0),  right: mkSF(1)  },
+    { key: 'final', label: 'Final', fullLabel: 'Final & 3rd',    left: [],       right: []        },
   ];
 
   const [mobileRound, setMobileRound] = useState('r32');
-
-  const MobileView = () => {
-    const rd = ROUND_DEFS.find(r => r.key === mobileRound);
-    const matches = rd.key === 'final'
-      ? []
-      : [...rd.left, ...rd.right];
-
-    return (
-      <div>
-        {/* Round selector pills */}
-        <div className="mobile-round-nav">
-          {ROUND_DEFS.map(r => (
-            <button key={r.key}
-              className={`mobile-round-btn ${mobileRound === r.key ? 'active' : ''} ${isRoundLocked(r.key) ? 'locked' : ''}`}
-              onClick={() => setMobileRound(r.key)}>
-              {r.label}
-              {isRoundLocked(r.key) && ' 🔒'}
-            </button>
-          ))}
-        </div>
-
-        <div className="mobile-round-title">{rd.fullLabel}</div>
-
-        {rd.key === 'final' ? (
-          <div className="mobile-final-grid">
-            <div>
-              <div className="ko-col-label" style={{textAlign:'left',marginBottom:8}}>🏆 Final</div>
-              <MatchSlot teamA={ko.final[0]} teamB={ko.final[1]} label="🏆 Final" onSelectWinner={advFinal} locked={isRoundLocked('final')}
-                scoreMode={scoreMode} score={getScore('final',0)} onScoreChange={v=>updateScore('final',0,v)}/>
-              {ko.winner !== 'TBD' && (
-                <div className="champion-box" style={{marginTop:10}}>
-                  <div className="champ-trophy">🏆</div>
-                  <div className="champ-label">CHAMPION</div>
-                  <div className="champ-team">{ko.winner}</div>
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="ko-col-label third-label" style={{textAlign:'left',marginBottom:8}}>🥉 3rd Place</div>
-              <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
-                scoreMode={scoreMode} score={getScore('third',0)} onScoreChange={v=>updateScore('third',0,v)}/>
-              {ko.thirdPlace !== 'TBD' && (
-                <div className="third-box" style={{marginTop:10}}>
-                  <div className="champ-trophy">🥉</div>
-                  <div className="champ-label">3RD PLACE</div>
-                  <div className="champ-team">{ko.thirdPlace}</div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="mobile-matches-grid">
-            {matches.map((m, i) => <div key={i}>{m.node}</div>)}
-          </div>
-        )}
-      </div>
-    );
-  };
+  const mobileRoundDef = ROUND_DEFS.find(r => r.key === mobileRound);
+  const mobileMatches = mobileRoundDef?.key === 'final' ? [] : [...(mobileRoundDef?.left||[]), ...(mobileRoundDef?.right||[])];
 
   return (
     <div>
@@ -1157,7 +1156,48 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
 
       {/* Mobile: round-by-round view */}
       <div className="ko-mobile">
-        <MobileView />
+        <div className="mobile-round-nav">
+          {ROUND_DEFS.map(r => (
+            <button key={r.key}
+              className={`mobile-round-btn ${mobileRound === r.key ? 'active' : ''} ${isRoundLocked(r.key) ? 'locked' : ''}`}
+              onClick={() => setMobileRound(r.key)}>
+              {r.label}{isRoundLocked(r.key) ? ' 🔒' : ''}
+            </button>
+          ))}
+        </div>
+        <div className="mobile-round-title">{mobileRoundDef?.fullLabel}</div>
+        {mobileRound === 'final' ? (
+          <div className="mobile-final-grid">
+            <div>
+              <div className="ko-col-label" style={{textAlign:'left',marginBottom:8}}>🏆 Final</div>
+              <MatchSlot teamA={ko.final[0]} teamB={ko.final[1]} label="🏆 Final" onSelectWinner={advFinal} locked={isRoundLocked('final')}
+                scoreMode={scoreMode} score={getScore('final',0)} onScoreChange={v=>updateScore('final',0,v)}/>
+              {ko.winner !== 'TBD' && (
+                <div className="champion-box" style={{marginTop:10}}>
+                  <div className="champ-trophy">🏆</div>
+                  <div className="champ-label">CHAMPION</div>
+                  <div className="champ-team">{ko.winner}</div>
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="ko-col-label third-label" style={{textAlign:'left',marginBottom:8}}>🥉 3rd Place</div>
+              <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
+                scoreMode={scoreMode} score={getScore('third',0)} onScoreChange={v=>updateScore('third',0,v)}/>
+              {ko.thirdPlace !== 'TBD' && (
+                <div className="third-box" style={{marginTop:10}}>
+                  <div className="champ-trophy">🥉</div>
+                  <div className="champ-label">3RD PLACE</div>
+                  <div className="champ-team">{ko.thirdPlace}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mobile-matches-grid">
+            {mobileMatches.map((m, i) => <div key={i}>{m.node}</div>)}
+          </div>
+        )}
       </div>
 
       {(ko.winner !== 'TBD' || ko.thirdPlace !== 'TBD') && (
@@ -1173,21 +1213,29 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
 // ─── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  // ── Load saved state from localStorage on first render ──
+  const saved = loadFromStorage();
+
   const [activeTab, setActiveTab]           = useState('prediction');
   const [section, setSection]               = useState('groups');
   const [showComparison, setShowComparison] = useState(false);
   const [showLiveFetch, setShowLiveFetch]   = useState(false);
 
-  const [prediction, setPrediction]         = useState(emptyData());
-  const [actual, setActual]                 = useState(emptyData());
-  const [predGroupMode, setPredGroupMode]   = useState('simple');
-  const [actGroupMode,  setActGroupMode]    = useState('simple');
-  const [predScoreMode, setPredScoreMode]   = useState(false);
-  const [actScoreMode,  setActScoreMode]    = useState(false);
-  const [lockState, setLockState]           = useState(emptyLockState());
+  const [prediction, setPrediction]         = useState(saved?.prediction     || emptyData());
+  const [actual, setActual]                 = useState(saved?.actual          || emptyData());
+  const [predGroupMode, setPredGroupMode]   = useState(saved?.predGroupMode  || 'simple');
+  const [actGroupMode,  setActGroupMode]    = useState(saved?.actGroupMode   || 'simple');
+  const [predScoreMode, setPredScoreMode]   = useState(saved?.predScoreMode  || false);
+  const [actScoreMode,  setActScoreMode]    = useState(saved?.actScoreMode   || false);
+  const [lockState, setLockState]           = useState(saved?.lockState      || emptyLockState());
 
-  // Live tournament phase from schedule
-  const { phase: tournPhase, lockedStages } = useTournamentPhase();
+  // ── Save to localStorage whenever any persistent state changes ──
+  useEffect(() => {
+    saveToStorage({ prediction, actual, lockState, predGroupMode, actGroupMode, predScoreMode, actScoreMode });
+  }, [prediction, actual, lockState, predGroupMode, actGroupMode, predScoreMode, actScoreMode]);
+
+  // Live tournament phase from schedule — re-evaluates every 30 seconds
+  const { phase: currentPhase, lockedStages, now: phaseNow } = useTournamentPhase();
 
   const data      = activeTab === 'prediction' ? prediction      : actual;
   const setData   = activeTab === 'prediction' ? setPrediction   : setActual;
@@ -1197,19 +1245,12 @@ export default function App() {
   const setSMode  = activeTab === 'prediction' ? setPredScoreMode : setActScoreMode;
 
   // Is a given stage editable right now on the prediction tab?
-  // Pre-tournament: editable unless user has manually locked
-  // During a stage: never editable
-  // In window after stage: editable (free)
-  // After window closes: locked permanently
   const isStageEditable = (stage) => {
-    if (activeTab !== 'prediction') return true; // actual tab always editable
-    const tp = getTournamentPhase();
+    if (activeTab !== 'prediction') return true;
+    const tp = getTournamentPhase(phaseNow); // use hook's tracked time, not raw Date()
     if (tp.phase === 'pre') return !lockState.userLocked;
     if (tp.phase === 'running') return false;
-    if (tp.phase === 'window') {
-      // Only the NEXT stage is editable during a window
-      return stage === tp.nextStage;
-    }
+    if (tp.phase === 'window') return stage === tp.nextStage;
     if (tp.phase === 'complete') return false;
     return false;
   };
@@ -1271,10 +1312,22 @@ export default function App() {
     <div className="app">
       <div className="hero">
         <span className="hero-icon">⚽</span>
-        <div>
+        <div style={{flex:1}}>
           <div className="hero-title">FIFA World Cup 2026</div>
           <div className="hero-sub">48 teams · 12 groups · R32 → R16 → QF → SF → Final + 3rd place</div>
         </div>
+        <button className="clear-data-btn" title="Clear all saved data and start fresh"
+          onClick={() => {
+            if (window.confirm('Clear all your predictions and results? This cannot be undone.')) {
+              localStorage.removeItem(STORAGE_KEY);
+              setPrediction(emptyData()); setActual(emptyData());
+              setLockState(emptyLockState());
+              setPredGroupMode('simple'); setActGroupMode('simple');
+              setPredScoreMode(false); setActScoreMode(false);
+            }
+          }}>
+          🗑 Reset
+        </button>
       </div>
 
       {/* Tab row */}
@@ -1305,7 +1358,7 @@ export default function App() {
       {/* Tournament status banner — prediction tab only */}
       {activeTab === 'prediction' && (
         <TournamentStatusBanner
-          tournPhase={getTournamentPhase()}
+          tournPhase={currentPhase}
           lockedStages={lockedStages}
           lockState={lockState}
           onUserLock={handleUserLock}
@@ -1358,14 +1411,13 @@ export default function App() {
             {section === 'groups' && (
               <GroupStage data={data} onSetQualifiers={setQualifiers} onUpdateMatch={updateMatch}
                 onBuildKnockout={buildKnockout} groupMode={groupMode} scoreMode={scoreMode}
-                onToggleScoreMode={setSMode}
                 locked={activeTab === 'prediction' && !groupEditable} />
             )}
             {section === 'knockout' && (
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
                 lockedRounds={activeTab === 'prediction' ? koLockedRounds : new Set()}
                 onPenalty={activeTab === 'prediction' ? handlePenalty : null}
-                isPenaltyActive={activeTab === 'prediction' && getTournamentPhase().phase === 'window'}
+                isPenaltyActive={activeTab === 'prediction' && currentPhase.phase === 'window'}
                 scoreMode={scoreMode} />
             )}
           </div>
