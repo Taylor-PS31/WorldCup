@@ -372,7 +372,7 @@ function getOutcome(res) {
   return { outcome: res.result || '', hg: null, ag: null };
 }
 
-function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints) {
+function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints, lockedPredictions) {
   const items = [];
   let totalEarned = 0, totalPossible = 0;
 
@@ -397,18 +397,21 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints) {
     // Group positions only compared when actual side has ALL 6 matches complete (advanced)
     // or at least 2 qualifiers selected (simple)
     const actualGroupComplete = actualIsSimple
-      ? (actual.qualifiers[gk]?.length >= 2)
+      ? (actual.qualifiers[gk]?.length >= 3) // 3 clicked = 4th is implicit
       : completeMatchCount >= 6;
 
     if (!actualGroupComplete) {
       // Still process match results below even if group not complete
     } else {
-      // Compare group positions
+      // Compare group positions for all 4 teams
       GROUPS[gk].forEach((team) => {
-        const pp = predOrder.indexOf(team), ap = actualOrder.indexOf(team);
-        if (pp < 0 || ap < 0) return;
-        const correct = pp === ap;
-        add({ category: 'Group Position', group: gk, description: `${team} — predicted ${pp+1}${ord(pp+1)}, actual ${ap+1}${ord(ap+1)}`, correct, earned: correct ? 1 : 0, possible: 1 });
+        const pp = predOrder.indexOf(team);
+        const ap = actualOrder.indexOf(team);
+        // If team not ranked in simple mode, treat as last place
+        const predPos = pp >= 0 ? pp : GROUPS[gk].length - 1;
+        const actPos  = ap >= 0 ? ap : GROUPS[gk].length - 1;
+        const correct = predPos === actPos;
+        add({ category: 'Group Position', group: gk, description: `${team} — predicted ${predPos+1}${ord(predPos+1)}, actual ${actPos+1}${ord(actPos+1)}`, correct, earned: correct ? 1 : 0, possible: 1 });
       });
     }
 
@@ -446,53 +449,88 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints) {
     }
   });
 
+  // KO round winner mapping: winners of each round are stored in the NEXT round's array
+  const WINNER_ARRAY = { r32: 'r16', r16: 'qf', qf: 'sf', sf: 'final' };
+
   KO_ROUNDS.forEach(({ key, label, matchCount }) => {
+    const winnerKey = WINNER_ARRAY[key];
+    if (!winnerKey) return;
+
+    // Use locked prediction snapshot if available, otherwise current prediction
+    const lockedSnap = lockedPredictions?.get(key);
+    const predWinners = lockedSnap || prediction.knockout[winnerKey] || [];
+
     for (let i = 0; i < matchCount; i++) {
-      const pw = prediction.knockout[key][i], aw = actual.knockout[key][i];
+      const pw = predWinners[i];
+      const aw = (actual.knockout[winnerKey] || [])[i];
+
       // Skip if either side is TBD or still a slot label (not a real team yet)
       if (!pw || !aw || isSlotLabel(pw) || isSlotLabel(aw)) continue;
       const correct = pw === aw;
 
-      // Score bonus (only if both sides have scores entered for this match)
+      // Score bonus — scores are stored against the source round key
       const scoreKey = `${key}-${i}`;
       const ps = (prediction.knockout.koScores || {})[scoreKey];
       const as = (actual.knockout.koScores     || {})[scoreKey];
-      const ph = parseInt(ps?.h), pa2 = parseInt(ps?.a);
-      const ah = parseInt(as?.h), aa  = parseInt(as?.a);
-      const hasScores = !isNaN(ph) && !isNaN(pa2) && !isNaN(ah) && !isNaN(aa);
-      const exactScore = hasScores && ph === ah && pa2 === aa;
+      const phRaw = ps?.h, paRaw = ps?.a, ahRaw = as?.h, aaRaw = as?.a;
+      const phV = (phRaw !== '' && phRaw !== null && phRaw !== undefined) ? Number(phRaw) : NaN;
+      const paV = (paRaw !== '' && paRaw !== null && paRaw !== undefined) ? Number(paRaw) : NaN;
+      const ahV = (ahRaw !== '' && ahRaw !== null && ahRaw !== undefined) ? Number(ahRaw) : NaN;
+      const aaV = (aaRaw !== '' && aaRaw !== null && aaRaw !== undefined) ? Number(aaRaw) : NaN;
+      const hasScores = !isNaN(phV) && !isNaN(paV) && !isNaN(ahV) && !isNaN(aaV);
+      const exactScore = hasScores && phV === ahV && paV === aaV;
 
       if (advancedMatchMode === 'score' && hasScores) {
         add({
-          category: `${label} Score`, group: null,
-          description: `Match ${i+1} — predicted ${ph}–${pa2}, actual ${ah}–${aa}`,
-          correct: exactScore, exactMatch: exactScore,
-          earned: exactScore ? 3 : 0, possible: 3,
+          category: label, group: null,
+          description: `Predicted ${pw} (${phV}–${paV}) — actual: ${aw} (${ahV}–${aaV})`,
+          correct, exactMatch: exactScore,
+          earned: correct ? (exactScore ? 4 : 1) : 0, possible: 4,
+        });
+      } else {
+        add({
+          category: label, group: null,
+          description: `Predicted ${pw} to advance — actual: ${aw}`,
+          correct, earned: correct ? 1 : 0, possible: 1,
         });
       }
-
-      add({
-        category: label, group: null,
-        description: `Predicted ${pw} to advance — actual: ${aw}`,
-        correct, earned: correct ? 1 : 0, possible: 1,
-      });
     }
   });
 
-  if (prediction.knockout.winner !== 'TBD' && actual.knockout.winner !== 'TBD' &&
-      !isSlotLabel(prediction.knockout.winner) && !isSlotLabel(actual.knockout.winner)) {
-    const correct = prediction.knockout.winner === actual.knockout.winner;
-    add({ category: 'Champion', group: null, description: `Predicted ${prediction.knockout.winner}, actual ${actual.knockout.winner}`, correct, earned: correct ? 1 : 0, possible: 1 });
+  // Final and 3rd place — use locked 'sf' snapshot for winner/thirdPlace if available
+  const lockedSFSnap = lockedPredictions?.get('sf');
+  const predWinner = lockedSFSnap?.[0] !== undefined
+    ? (lockedPredictions?.get('final')?.[0] || prediction.knockout.winner)
+    : prediction.knockout.winner;
+  const predThird = prediction.knockout.thirdPlace;
+
+  if (predWinner !== 'TBD' && actual.knockout.winner !== 'TBD' &&
+      !isSlotLabel(predWinner) && !isSlotLabel(actual.knockout.winner)) {
+    const correct = predWinner === actual.knockout.winner;
+    // Check for final score bonus
+    const fps = (prediction.knockout.koScores || {})['final-0'];
+    const fas = (actual.knockout.koScores     || {})['final-0'];
+    const fph = fps?.h !== '' && fps?.h != null ? Number(fps.h) : NaN;
+    const fpa = fps?.a !== '' && fps?.a != null ? Number(fps.a) : NaN;
+    const fah = fas?.h !== '' && fas?.h != null ? Number(fas.h) : NaN;
+    const faa = fas?.a !== '' && fas?.a != null ? Number(fas.a) : NaN;
+    const fHasScores = !isNaN(fph) && !isNaN(fpa) && !isNaN(fah) && !isNaN(faa);
+    const fExact = fHasScores && fph === fah && fpa === faa;
+    if (advancedMatchMode === 'score' && fHasScores) {
+      add({ category: 'Champion', group: null, description: `Predicted ${predWinner} (${fph}–${fpa}), actual ${actual.knockout.winner} (${fah}–${faa})`, correct, exactMatch: fExact, earned: correct ? (fExact ? 4 : 1) : 0, possible: 4 });
+    } else {
+      add({ category: 'Champion', group: null, description: `Predicted ${predWinner}, actual ${actual.knockout.winner}`, correct, earned: correct ? 1 : 0, possible: 1 });
+    }
   }
-  if (prediction.knockout.thirdPlace !== 'TBD' && actual.knockout.thirdPlace !== 'TBD' &&
-      !isSlotLabel(prediction.knockout.thirdPlace) && !isSlotLabel(actual.knockout.thirdPlace)) {
-    const correct = prediction.knockout.thirdPlace === actual.knockout.thirdPlace;
-    add({ category: '3rd Place', group: null, description: `Predicted ${prediction.knockout.thirdPlace}, actual ${actual.knockout.thirdPlace}`, correct, earned: correct ? 1 : 0, possible: 1 });
+  if (predThird !== 'TBD' && actual.knockout.thirdPlace !== 'TBD' &&
+      !isSlotLabel(predThird) && !isSlotLabel(actual.knockout.thirdPlace)) {
+    const correct = predThird === actual.knockout.thirdPlace;
+    add({ category: '3rd Place', group: null, description: `Predicted ${predThird}, actual ${actual.knockout.thirdPlace}`, correct, earned: correct ? 1 : 0, possible: 1 });
   }
 
   // Deduct penalty points for post-lock changes
   const penalty = penaltyPoints || 0;
-  return { items, totalEarned: Math.max(0, totalEarned - penalty), totalPossible, penaltyDeducted: penalty };
+  return { items, totalEarned: totalEarned - penalty, totalPossible, penaltyDeducted: penalty };
 }
 
 // ─── Live data fetch (football-data.org) ──────────────────────────────────────
@@ -589,17 +627,19 @@ function ScoringGuide() {
 
 // ─── Comparison Panel ─────────────────────────────────────────────────────────
 
-const ALL_CATEGORIES = ['Group Position', 'Match Result', 'Round of 32', 'Round of 16', 'Quarter-finals', 'Semi-finals', 'Champion', '3rd Place'];
+const ALL_CATEGORIES = ['Group Position', 'Match Result', 'Round of 32', 'Round of 16', 'Quarter-finals', 'Semi-finals', 'Champion', 'Runner-up', '3rd Place'];
 
-function ComparisonPanel({ prediction, actual, predGroupMode, actGroupMode, penaltyPoints, scoreMode }) {
+function ComparisonPanel({ prediction, actual, predGroupMode, actGroupMode, penaltyPoints, scoreMode, lockedPredictions }) {
   const [displayMode, setDisplayMode]       = useState('points');
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterResult, setFilterResult]     = useState('All');
   const [filterGroup, setFilterGroup]       = useState('All');
 
-  const bothAdvanced = predGroupMode === 'advanced' && actGroupMode === 'advanced';
   const matchMode = scoreMode ? 'score' : 'wdl';
-  const { items, totalEarned, totalPossible, penaltyDeducted } = buildComparison(prediction, actual, matchMode, penaltyPoints);
+  const { items, totalEarned: rawEarned, totalPossible } = buildComparison(prediction, actual, matchMode, 0, lockedPredictions);
+  const penaltyDeducted = penaltyPoints || 0;
+  const totalEarned = rawEarned - penaltyDeducted;
+  const presentCategories = ALL_CATEGORIES.filter(c => items.some(i => i.category === c));
 
   const filtered = items.filter((item) => {
     if (filterCategory !== 'All' && item.category !== filterCategory) return false;
@@ -620,7 +660,7 @@ function ComparisonPanel({ prediction, actual, predGroupMode, actGroupMode, pena
           <div className="cmp-title">📊 Prediction Analysis</div>
           <div className="cmp-sub">
             1pt per correct group position · 1pt per correct KO advance
-            {bothAdvanced && <> · {matchMode === 'wdl' ? '+1pt W/D/L' : '+3pts exact score'}</>}
+            {predGroupMode === 'advanced' && actGroupMode === 'advanced' && <> · {matchMode === 'wdl' ? '+1pt W/D/L' : '+3pts exact score'}</>}
             {penaltyDeducted > 0 && <span className="penalty-note"> · −{penaltyDeducted}pts late-change penalty</span>}
           </div>
         </div>
@@ -651,7 +691,7 @@ function ComparisonPanel({ prediction, actual, predGroupMode, actGroupMode, pena
               <span className="filter-label">Category</span>
               <select className="filter-select" value={filterCategory} onChange={e=>setFilterCategory(e.target.value)}>
                 <option value="All">All</option>
-                {ALL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                {presentCategories.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div className="filter-group">
@@ -906,13 +946,41 @@ function AutoFetcher({ apiKey, onFetch }) {
 
 // A slot label is a placeholder like "Winner Group A" — not a real team yet
 const isSlotLabel = (team) =>
-  !team ||
+  team === undefined ||
+  team === null ||
+  team === '' ||
   team === 'TBD' ||
-  team.startsWith('Winner Group') ||
-  team.startsWith('Runner-up Group') ||
-  team.startsWith('3rd Group');
+  (typeof team === 'string' && (
+    team.startsWith('Winner Group') ||
+    team.startsWith('Runner-up Group') ||
+    team.startsWith('3rd Group')
+  ));
 
 function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, score, onScoreChange }) {
+  // Use local state for score inputs to prevent re-render losing focus mid-type
+  const [localH, setLocalH] = useState(score?.h ?? '');
+  const [localA, setLocalA] = useState(score?.a ?? '');
+
+  // Sync local state when score prop changes from outside (e.g. auto-fill)
+  useEffect(() => { setLocalH(score?.h ?? ''); }, [score?.h]);
+  useEffect(() => { setLocalA(score?.a ?? ''); }, [score?.a]);
+
+  const commitScore = (h, a) => {
+    if (!onScoreChange) return;
+    const newScore = { ...(score||{}), h, a };
+    onScoreChange(newScore);
+    // Auto-advance winner once both scores committed and unambiguous
+    if (onSelectWinner && !locked) {
+      const hNum = Number(h), aNum = Number(a);
+      const hOk = h !== '' && !isNaN(hNum);
+      const aOk = a !== '' && !isNaN(aNum);
+      if (hOk && aOk && hNum !== aNum) {
+        const winner = hNum > aNum ? teamA : teamB;
+        if (winner && !isSlotLabel(winner)) onSelectWinner(winner);
+      }
+    }
+  };
+
   return (
     <div className="match-slot">
       {label && <div className="match-label">{label}</div>}
@@ -936,23 +1004,29 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
           <input
             type="text" inputMode="numeric" pattern="[0-9]*"
             className="score-input" disabled={locked}
-            value={score?.h ?? ''} placeholder="0"
+            value={localH} placeholder="0"
             onChange={e => {
-              if (locked) return;
               const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
-              onScoreChange({ ...(score||{}), h: v });
+              setLocalH(v);
+              // Commit immediately if away score already filled
+              if (localA !== '' && v !== '') commitScore(v, localA);
             }}
+            onBlur={() => commitScore(localH, localA)}
+            onKeyDown={e => e.key === 'Enter' && commitScore(localH, localA)}
           />
           <span className="score-sep">–</span>
           <input
             type="text" inputMode="numeric" pattern="[0-9]*"
             className="score-input" disabled={locked}
-            value={score?.a ?? ''} placeholder="0"
+            value={localA} placeholder="0"
             onChange={e => {
-              if (locked) return;
               const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
-              onScoreChange({ ...(score||{}), a: v });
+              setLocalA(v);
+              // Commit immediately if home score already filled
+              if (localH !== '' && v !== '') commitScore(localH, v);
             }}
+            onBlur={() => commitScore(localH, localA)}
+            onKeyDown={e => e.key === 'Enter' && commitScore(localH, localA)}
           />
         </div>
       )}
@@ -965,6 +1039,13 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
 function SimpleGroupCard({ groupKey, qualifiers, onToggle, locked }) {
   const teams = GROUPS[groupKey];
   const q = qualifiers[groupKey] || [];
+
+  // Count how many groups have a 3rd place ranked across ALL groups
+  // to determine if this group's 3rd place is in the top 8
+  const allThirds = GROUP_KEYS.map(gk => qualifiers[gk]?.[2]).filter(Boolean);
+  const thisThird = q[2];
+  const thirdRank = thisThird ? allThirds.indexOf(thisThird) : -1; // 0-indexed rank among all thirds
+  const thirdQualifies = thirdRank >= 0 && thirdRank < 8; // top 8 thirds qualify
   const sorted = [...teams].sort((a, b) => {
     const pa = q.indexOf(a), pb = q.indexOf(b);
     if (pa >= 0 && pb >= 0) return pa - pb;
@@ -987,7 +1068,10 @@ function SimpleGroupCard({ groupKey, qualifiers, onToggle, locked }) {
                 <td className="badge-cell">
                   {pos === 0 && <span className="badge b1">1st</span>}
                   {pos === 1 && <span className="badge b2">2nd</span>}
-                  {pos === 2 && <span className="badge b3">3rd★</span>}
+                  {pos === 2 && (thirdQualifies
+                    ? <span className="badge b3">3rd★</span>
+                    : <span className="badge b3-plain">3</span>)}
+                  {pos === 3 && <span className="badge b4-plain">4</span>}
                 </td>
                 <td className="team-cell"><span className="team-name">{team}</span></td>
                 <td className="pts">{pos >= 0 ? pos + 1 : '—'}</td>
@@ -1086,7 +1170,7 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
 
 // ─── Group Stage wrapper ───────────────────────────────────────────────────────
 
-function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, groupMode, scoreMode, locked }) {
+function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, groupMode, scoreMode, locked, groupStageConfirmed }) {
   const q = data.qualifiers;
   const getAdvQ = () => {
     const d = {};
@@ -1193,15 +1277,17 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
       </div>
       {!locked && groupMode === 'simple' && !allTop2Done && <p className="build-hint">Select top 2 from every group to unlock the knockout stage.</p>}
       {!locked && groupMode === 'simple' && allTop2Done && best3Count < 8 && <p className="build-hint">{best3Count}/8 best 3rd-place teams. Pick {8-best3Count} more.</p>}
-      {!locked && <button className={`build-btn ${canBuild?'active':'disabled'}`} onClick={()=>canBuild&&handleBuild()}>Build knockout bracket →</button>}
+      {!locked && !groupStageConfirmed && <button className={`build-btn ${canBuild?'active':'disabled'}`} onClick={()=>canBuild&&handleBuild()}>Build knockout bracket →</button>}
+      {groupStageConfirmed && <div className="info-bar" style={{color:'#2a6a2a',background:'rgba(42,106,42,0.07)',border:'0.5px solid rgba(42,106,42,0.2)'}}>✅ Group stage confirmed — knockout bracket locked in.</div>}
     </div>
   );
 }
 
 // ─── Knockout Stage ────────────────────────────────────────────────────────────
 
-function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode, isPenaltyActive }) {
+function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode, isPenaltyActive, onClearDismissed, confirmedStages }) {
   const ko = knockout;
+  const isRoundDone = (key) => confirmedStages?.has(key) || false;
 
   const updateScore = (roundKey, matchIdx, val) => {
     const scoreKey = `${roundKey}-${matchIdx}`;
@@ -1219,26 +1305,26 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
     const arr = [...ko[roundKey]];
     arr[matchIdx] = team;
     onUpdate({ ...ko, [roundKey]: arr });
+    // Tell parent to re-check this round's completion
+    if (onClearDismissed) onClearDismissed(roundKey);
   };
 
-  const advSF = (mi, team) => {
+  const advSF = (matchIdx, team) => {
     if (lockedRounds?.has('sf')) return;
-    const prev = ko.sf[mi];
-    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
-    const sf = [...ko.sf]; sf[mi] = team;
-    const other = mi % 2 === 0 ? mi + 1 : mi - 1;
-    const loser = [ko.sf[mi], ko.sf[other]].find(x => x !== team && x !== 'TBD') || 'TBD';
-    const slot = mi < 2 ? 0 : 1;
-    const final = [...ko.final]; final[slot] = team;
-    const third = [...ko.third]; third[slot] = loser;
-    onUpdate({ ...ko, sf, final, third });
+    const slotA = matchIdx * 2, slotB = matchIdx * 2 + 1;
+    if (isPenaltyActive && ko.final[matchIdx] !== 'TBD' && ko.final[matchIdx] !== team && onPenalty) onPenalty();
+    const loser = [ko.sf[slotA], ko.sf[slotB]].find(x => x !== team && !isSlotLabel(x)) || 'TBD';
+    const final = [...ko.final]; final[matchIdx] = team;
+    const third = [...ko.third]; third[matchIdx] = loser;
+    onUpdate({ ...ko, final, third });
+    if (onClearDismissed) onClearDismissed('sf');
   };
 
   const advFinal = (team) => {
     if (lockedRounds?.has('final')) return;
-    const prev = ko.winner;
-    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
+    if (isPenaltyActive && ko.winner !== 'TBD' && ko.winner !== team && onPenalty) onPenalty();
     onUpdate({ ...ko, winner: team });
+    if (onClearDismissed) onClearDismissed('final');
   };
 
   const advThird = (team) => {
@@ -1255,14 +1341,19 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
   const gap1 = (matchH+gap0)*2-matchH, gap2 = (matchH+gap1)*2-matchH, gap3 = (matchH+gap2)*2-matchH;
   const mt1 = (matchH+gap0)/2, mt2 = mt1+(matchH+gap1)/2, mt3 = mt2+(matchH+gap2)/2, mt4 = mt3+(matchH+gap3)/2;
 
-  const renderCol = (label, matches, marginTop) => (
-    <div className="ko-col">
-      <div className="ko-col-label">{label}</div>
-      <div className="ko-col-matches" style={{marginTop}}>
-        {matches.map((m,i) => <div key={i}>{i>0&&<div style={{height:m.gap}}/>}{m.node}</div>)}
+  const renderCol = (label, matches, marginTop, roundKey) => {
+    const isDone = roundKey && isRoundDone(roundKey);
+    return (
+      <div className={`ko-col${isDone ? ' ko-col-done' : ''}`}>
+        <div className="ko-col-label">
+          {label}{isDone ? ' ✅' : ''}
+        </div>
+        <div className="ko-col-matches" style={{marginTop}}>
+          {matches.map((m,i) => <div key={i}>{i>0&&<div style={{height:m.gap}}/>}{m.node}</div>)}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // mi = match index; teamA = ko[round][mi*2], teamB = ko[round][mi*2+1]
   // winner stored at ko[round][mi] — but wait, the r16 advancers array has 16 slots for 16 matches
@@ -1287,7 +1378,7 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
   });
   const mkSF = (s) => [{
     node:<MatchSlot teamA={ko.sf[s*2]} teamB={ko.sf[s*2+1]} label={`SF ${s+1}`}
-      onSelectWinner={t=>advSF(s*2,t)} locked={isRoundLocked('sf')}
+      onSelectWinner={t=>advSF(s,t)} locked={isRoundLocked('sf')}
       scoreMode={scoreMode} score={getScore('sf',s)} onScoreChange={v=>updateScore('sf',s,v)}/>, gap:0 }];
 
   // Build all matches for a given round as a flat list — unused but kept for future use
@@ -1312,10 +1403,10 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
       <div className="ko-desktop">
         <div className="ko-scroll">
           <div className="ko-bracket">
-            {renderCol('Round of 32', mkR32(0), 0)}
-            {renderCol('Round of 16', mkR16(0), mt1)}
-            {renderCol('Quarter-finals', mkQF(0), mt2)}
-            {renderCol('Semi-finals', mkSF(0), mt3)}
+            {renderCol('Round of 32', mkR32(0), 0, 'r32')}
+            {renderCol('Round of 16', mkR16(0), mt1, 'r16')}
+            {renderCol('Quarter-finals', mkQF(0), mt2, 'qf')}
+            {renderCol('Semi-finals', mkSF(0), mt3, 'sf')}
             <div className="ko-col ko-centre">
               <div style={{height:mt4}}/>
               <div className="ko-col-label">Final</div>
@@ -1326,6 +1417,13 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
                 <div className="champ-label">CHAMPION</div>
                 <div className="champ-team">{ko.winner==='TBD'?<em>TBD</em>:ko.winner}</div>
               </div>
+              {ko.winner !== 'TBD' && (
+                <div className="second-box">
+                  <div className="champ-trophy">🥈</div>
+                  <div className="champ-label">RUNNER-UP</div>
+                  <div className="champ-team">{ko.final.find(t => t !== ko.winner && t !== 'TBD') || <em>TBD</em>}</div>
+                </div>
+              )}
               <div style={{height:20}}/>
               <div className="ko-col-label third-label">3rd Place</div>
               <MatchSlot teamA={ko.third[0]} teamB={ko.third[1]} label="🥉 3rd place" onSelectWinner={advThird}
@@ -1338,10 +1436,10 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
                 </div>
               )}
             </div>
-            {renderCol('Semi-finals', mkSF(1), mt3)}
-            {renderCol('Quarter-finals', mkQF(1), mt2)}
-            {renderCol('Round of 16', mkR16(1), mt1)}
-            {renderCol('Round of 32', mkR32(1), 0)}
+            {renderCol('Semi-finals', mkSF(1), mt3, 'sf')}
+            {renderCol('Quarter-finals', mkQF(1), mt2, 'qf')}
+            {renderCol('Round of 16', mkR16(1), mt1, 'r16')}
+            {renderCol('Round of 32', mkR32(1), 0, 'r32')}
           </div>
         </div>
       </div>
@@ -1351,13 +1449,16 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
         <div className="mobile-round-nav">
           {ROUND_DEFS.map(r => (
             <button key={r.key}
-              className={`mobile-round-btn ${mobileRound === r.key ? 'active' : ''} ${isRoundLocked(r.key) ? 'locked' : ''}`}
+              className={`mobile-round-btn ${mobileRound === r.key ? 'active' : ''} ${isRoundLocked(r.key) ? 'locked' : ''} ${isRoundDone(r.key) ? 'done' : ''}`}
               onClick={() => setMobileRound(r.key)}>
-              {r.label}{isRoundLocked(r.key) ? ' 🔒' : ''}
+              {r.label}{isRoundLocked(r.key) ? ' 🔒' : ''}{isRoundDone(r.key) ? ' ✅' : ''}
             </button>
           ))}
         </div>
-        <div className="mobile-round-title">{mobileRoundDef?.fullLabel}</div>
+        <div className="mobile-round-title">
+          {mobileRoundDef?.fullLabel}
+          {confirmedStages?.has(mobileRound) && <span style={{marginLeft:8,fontSize:11,color:'#2a6a2a'}}>✅ confirmed</span>}
+        </div>
         {mobileRound === 'final' ? (
           <div className="mobile-final-grid">
             <div>
@@ -1369,6 +1470,13 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
                   <div className="champ-trophy">🏆</div>
                   <div className="champ-label">CHAMPION</div>
                   <div className="champ-team">{ko.winner}</div>
+                </div>
+              )}
+              {ko.winner !== 'TBD' && (
+                <div className="second-box" style={{marginTop:6}}>
+                  <div className="champ-trophy">🥈</div>
+                  <div className="champ-label">RUNNER-UP</div>
+                  <div className="champ-team">{ko.final.find(t => t !== ko.winner && t !== 'TBD') || <em>TBD</em>}</div>
                 </div>
               )}
             </div>
@@ -1395,6 +1503,7 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
       {(ko.winner !== 'TBD' || ko.thirdPlace !== 'TBD') && (
         <div className="result-banner">
           {ko.winner !== 'TBD' && <div className="result-item"><span>🏆</span><div><div className="result-label">CHAMPION</div><div className="result-team">{ko.winner}</div></div></div>}
+          {ko.winner !== 'TBD' && (() => { const ru = ko.final.find(t => t !== ko.winner && t !== 'TBD'); return ru ? <div className="result-item"><span>🥈</span><div><div className="result-label">RUNNER-UP</div><div className="result-team">{ru}</div></div></div> : null; })()}
           {ko.thirdPlace !== 'TBD' && <div className="result-item"><span>🥉</span><div><div className="result-label">3RD PLACE</div><div className="result-team">{ko.thirdPlace}</div></div></div>}
         </div>
       )}
@@ -1413,7 +1522,7 @@ const NEXT_STAGE_LABELS = {
   qf: 'Semi-finals', sf: 'Final & 3rd Place', final: null,
 };
 
-function StagePromptModal({ prompt, onConfirm, onGoBack, onGoToPredict, penaltyCost }) {
+function StagePromptModal({ prompt, onConfirm, onGoBack, onGoToPredict, penaltyCost, needsBracketBuild }) {
   if (!prompt) return null;
   const { stage, step } = prompt;
   const stageLabel = STAGE_FULL_LABELS[stage] || stage;
@@ -1427,14 +1536,29 @@ function StagePromptModal({ prompt, onConfirm, onGoBack, onGoToPredict, penaltyC
             <div className="modal-icon">📋</div>
             <div className="modal-title">Confirm {stageLabel} Results</div>
             <div className="modal-body">
-              All {stageLabel} results are now in. Please check they are correct before moving on — re-confirming after going back will cost <strong>penalty points</strong>.
+              {prompt.stage === 'groups' && needsBracketBuild ? (
+                <span style={{color:'#8b1a1a'}}>
+                  ⚠️ You need to <strong>Build the knockout bracket</strong> on the Actual Results → Knockout Stage tab first before confirming the group stage. This ensures all 32 Round of 32 teams are correctly assigned.
+                </span>
+              ) : (
+                <>
+                  All {stageLabel} results are now in. Please check carefully before confirming — <strong>re-confirming after going back will cost 1 penalty point</strong> each time.
+                  {prompt.reconfirmPenalty > 0 && (
+                    <div style={{marginTop:10, padding:'8px 12px', background:'rgba(139,26,26,0.07)', borderRadius:8, color:'#8b1a1a'}}>
+                      ⚠️ You previously went back to fix these. Re-confirming now will cost <strong>{prompt.reconfirmPenalty} penalty point{prompt.reconfirmPenalty !== 1 ? 's' : ''}</strong>.
+                    </div>
+                  )}
+                </>
+              )}
             </div>
             <div className="modal-actions">
-              <button className="modal-btn modal-btn-primary" onClick={onConfirm}>
-                ✅ Yes, these results are correct
-              </button>
+              {!(prompt.stage === 'groups' && needsBracketBuild) && (
+                <button className="modal-btn modal-btn-primary" onClick={onConfirm}>
+                  ✅ {prompt.reconfirmPenalty > 0 ? `Confirm anyway (−${prompt.reconfirmPenalty}pts)` : 'Yes, these results are correct'}
+                </button>
+              )}
               <button className="modal-btn modal-btn-secondary" onClick={onGoBack}>
-                ✏️ No, let me fix them first
+                {prompt.stage === 'groups' && needsBracketBuild ? '← Go build the bracket first' : '✏️ No, let me fix them first'}
               </button>
             </div>
           </>
@@ -1460,7 +1584,7 @@ function StagePromptModal({ prompt, onConfirm, onGoBack, onGoToPredict, penaltyC
             </div>
             <div className="modal-actions">
               {nextLabel && (
-                <button className="modal-btn modal-btn-primary" onClick={onGoToPredict}>
+                <button className="modal-btn modal-btn-primary" onClick={() => onGoToPredict(false)}>
                   🔮 Go to My Prediction tab
                 </button>
               )}
@@ -1498,14 +1622,21 @@ export default function App() {
   const [confirmedStages, setConfirmedStages] = useState(
     new Set(Array.isArray(saved?.confirmedStages) ? saved.confirmedStages : [])
   );
-  const [stagePrompt, setStagePrompt]         = useState(null);
-  const [dismissedPrompts, setDismissedPrompts] = useState(new Set()); // stages user dismissed to fix
+  const [stagePrompt, setStagePrompt]           = useState(null);
+  const [dismissedPrompts, setDismissedPrompts] = useState(new Map());
+  const [notifiedStages, setNotifiedStages]     = useState(new Set());
+  // lockedPredictions: Map of roundKey → snapshot of prediction slots at time of lock
+  // e.g. { 'r32': ['Germany', 'France', ...16 teams] } — these are the picks that will be penalised
+  const [lockedPredictions, setLockedPredictions] = useState(
+    new Map(Object.entries(saved?.lockedPredictions || {}))
+  ); // stages where notify was shown
 
   // ── Save to localStorage whenever any persistent state changes ──
   useEffect(() => {
     saveToStorage({
       prediction, actual, lockState, predGroupMode, actGroupMode, predScoreMode, actScoreMode,
-      confirmedStages: [...confirmedStages], // Set → Array for JSON
+      confirmedStages: [...confirmedStages],
+      lockedPredictions: Object.fromEntries(lockedPredictions),
     });
   }, [prediction, actual, lockState, predGroupMode, actGroupMode, predScoreMode, actScoreMode, confirmedStages]);
 
@@ -1522,7 +1653,9 @@ export default function App() {
   // Is a given stage editable right now on the prediction tab?
   const isStageEditable = (stage) => {
     if (activeTab !== 'prediction') return true;
-    const tp = getTournamentPhase(phaseNow); // use hook's tracked time, not raw Date()
+    // Once a stage has been confirmed on actual tab, lock it on prediction tab
+    if (confirmedStages.has(stage)) return false;
+    const tp = getTournamentPhase(phaseNow);
     if (tp.phase === 'pre') return !lockState.userLocked;
     if (tp.phase === 'running') return false;
     if (tp.phase === 'window') return stage === tp.nextStage;
@@ -1536,15 +1669,23 @@ export default function App() {
   const koLockedRounds = new Set(STAGE_ORDER.filter(s => !koEditableStages.has(s)));
 
   const setQualifiers = (gk, teams) => setData(prev => ({ ...prev, qualifiers: { ...prev.qualifiers, [gk]: teams } }));
-  const updateMatch   = (gk, idx, res) => {
+  const updateMatch = (gk, idx, res) => {
     setData(prev => ({ ...prev, matchResults: { ...prev.matchResults, [gk]: { ...(prev.matchResults[gk] || {}), [idx]: res } } }));
-    // Clear dismissed prompts so the confirm dialog can re-appear after fixing results
-    if (activeTab === 'actual') setDismissedPrompts(new Set());
+    // Clear only the 'groups' dismissed prompt when a group result changes
+    // so the confirm dialog can re-appear once all groups are complete
+    if (activeTab === 'actual') {
+      setDismissedPrompts(prev => {
+        if (!prev.has('groups')) return prev;
+        const next = new Map(prev);
+        next.delete('groups');
+        return next;
+      });
+    }
   };
 
   // ── Stage completion detection ──
   const isGroupStageComplete = (act) => {
-    // All 72 group matches entered (6 per group × 12 groups) — or KO bracket built
+    // Advanced mode: all 72 matches entered
     const totalMatches = GROUP_KEYS.reduce((sum, gk) => {
       const complete = Object.values(act.matchResults[gk] || {}).filter(r => {
         if (!r) return false;
@@ -1556,50 +1697,75 @@ export default function App() {
       }).length;
       return sum + complete;
     }, 0);
-    // Also consider if user built the KO bracket (simple mode)
-    const koBuilt = act.knockout.r32.some(t => t && !isSlotLabel(t));
-    return totalMatches >= 72 || koBuilt;
+    if (totalMatches >= 72) return true;
+    // Simple mode: all 12 groups have at least 3 positions ranked
+    const allGroupsRanked = GROUP_KEYS.every(gk => (act.qualifiers[gk]?.length || 0) >= 3);
+    if (allGroupsRanked) return true;
+    // Also consider if KO bracket was manually built on actual tab
+    return act.knockout.r32.some(t => t && !isSlotLabel(t));
   };
 
   const isKORoundComplete = (act, roundKey) => {
     const round = KO_ROUNDS.find(r => r.key === roundKey);
     if (!round) return false;
-    // All advancers filled with real teams
-    return act.knockout[roundKey]
+    // Winners of roundKey are stored in the NEXT round's array
+    // e.g. R32 winners → r16 array, R16 winners → qf array, etc.
+    const nextRoundKey = roundKey === 'r32' ? 'r16'
+      : roundKey === 'r16' ? 'qf'
+      : roundKey === 'qf'  ? 'sf'
+      : roundKey === 'sf'  ? 'final'
+      : null;
+    if (!nextRoundKey) return false;
+    const advancers = act.knockout[nextRoundKey] || [];
+    return advancers
       .slice(0, round.matchCount)
       .every(t => t && !isSlotLabel(t) && t !== 'TBD');
   };
 
   // Detect when actual results complete a stage and show the prompt
   useEffect(() => {
-    if (stagePrompt) return; // already showing a prompt
-    // Check groups
-    if (!confirmedStages.has('groups') && !dismissedPrompts.has('groups') && isGroupStageComplete(actual)) {
-      setStagePrompt({ stage: 'groups', step: 'confirm' });
+    if (stagePrompt) return;
+    if (activeTab !== 'actual') return;
+
+    if (!confirmedStages.has('groups') && !dismissedPrompts.has('groups') && !notifiedStages.has('groups') && isGroupStageComplete(actual)) {
+      setStagePrompt({ stage: 'groups', step: 'confirm', reconfirmPenalty: 0 });
       return;
     }
-    // Check KO rounds
     for (const { key } of KO_ROUNDS) {
-      const prevKey = key === 'r32' ? 'groups' : KO_ROUNDS[KO_ROUNDS.findIndex(r=>r.key===key)-1]?.key;
-      if (!confirmedStages.has(key) && !dismissedPrompts.has(key) && confirmedStages.has(prevKey) && isKORoundComplete(actual, key)) {
-        setStagePrompt({ stage: key, step: 'confirm' });
+      if (confirmedStages.has(key)) continue;
+      if (dismissedPrompts.has(key)) continue;
+      if (notifiedStages.has(key)) continue;
+      if (isKORoundComplete(actual, key)) {
+        setStagePrompt({ stage: key, step: 'confirm', reconfirmPenalty: 0 });
         return;
       }
     }
-    // Check final/3rd place
-    if (!confirmedStages.has('final') && !dismissedPrompts.has('final') && confirmedStages.has('sf') &&
+    if (!confirmedStages.has('final') && !dismissedPrompts.has('final') && !notifiedStages.has('final') &&
+        confirmedStages.has('sf') &&
         actual.knockout.winner !== 'TBD' && !isSlotLabel(actual.knockout.winner)) {
-      setStagePrompt({ stage: 'final', step: 'confirm' });
+      setStagePrompt({ stage: 'final', step: 'confirm', reconfirmPenalty: 0 });
     }
-  }, [actual, confirmedStages, stagePrompt, dismissedPrompts]);
+  }, [actual, confirmedStages, stagePrompt, dismissedPrompts, activeTab, notifiedStages]);
 
-  // Count how many R32 slots would change if filled from actual results
+  // Lock in the user's predictions for a KO round — snapshot their current picks
+  // These picks will be compared against actual results for penalties
+  // countFillPenalties uses locked snapshots
+
+  // Count penalties: compare locked prediction snapshot against actual results
   const countFillPenalties = (stage) => {
     const actualSlots = actual.knockout[stage] || [];
-    const predSlots   = prediction.knockout[stage] || [];
-    return actualSlots.filter((team, i) =>
-      team && !isSlotLabel(team) && team !== 'TBD' && predSlots[i] !== team
-    ).length;
+    // Use locked snapshot if available, otherwise use current prediction at confirm time
+    const lockedKey = { r16:'r32', qf:'r16', sf:'qf', final:'sf' }[stage];
+    const lockedSnap = lockedKey ? lockedPredictions.get(lockedKey) : null;
+    // Fall back to current prediction if no manual lock — still charge penalty for wrong picks
+    const predSlots = lockedSnap || prediction.knockout[stage] || [];
+    return actualSlots.filter((team, i) => {
+      if (!team || isSlotLabel(team) || team === 'TBD') return false;
+      const predTeam = predSlots[i];
+      // No penalty if prediction was never set (TBD/slot label)
+      if (!predTeam || isSlotLabel(predTeam) || predTeam === 'TBD') return false;
+      return predTeam !== team;
+    }).length;
   };
 
   const buildKnockout = (r32) => {
@@ -1671,20 +1837,182 @@ export default function App() {
     });
   }, []);
 
-  // ── Stage prompt handlers ──
+  // When a KO result changes, clear the dismissed prompt for that round
+  // so the confirm dialog can re-appear once the round is complete
+  const handleClearDismissed = (roundKey) => {
+    const sourceKey = roundKey === 'r16' ? 'r32'
+      : roundKey === 'qf'    ? 'r16'
+      : roundKey === 'sf'    ? 'qf'
+      : roundKey === 'final' ? 'sf'
+      : roundKey;
+    setDismissedPrompts(prev => {
+      if (!prev.has(sourceKey)) return prev;
+      const next = new Map(prev);
+      next.delete(sourceKey);
+      return next;
+    });
+  };
   const handleStageConfirm = () => {
-    // Move from 'confirm' step to 'notify' step
-    const penaltyCost = stagePrompt ? countFillPenalties(
-      stagePrompt.stage === 'groups' ? 'r32' : stagePrompt.stage
-    ) : 0;
-    setConfirmedStages(prev => new Set([...prev, stagePrompt.stage]));
+    const stage = stagePrompt?.stage;
+
+    // Determine which prediction KO array needs syncing from actual
+    // Groups confirmed → sync actual.r32 into prediction.r32
+    // R32 confirmed → sync actual.r16 into prediction.r16
+    // R16 confirmed → sync actual.qf into prediction.qf etc.
+    const syncMap = { groups: 'r32', r32: 'r16', r16: 'qf', qf: 'sf', sf: 'final' };
+    const syncStage = syncMap[stage] || null;
+
+    // For groups stage, auto-build actual R32 from actual qualifiers if not built yet
+    let actualKO = actual.knockout;
+    if (stage === 'groups' && actual.knockout.r32.every(t => isSlotLabel(t))) {
+      // Simple mode: build from actual.qualifiers
+      const actQ = actual.qualifiers;
+      const actMR = actual.matchResults;
+      // Use advanced standings if available, else simple qualifiers
+      const getWinner = (g) => {
+        if ((actQ[g]||[]).length > 0) return actQ[g][0];
+        const s = calcStandings(g, actMR[g]);
+        return s[0]?.name || `Winner Group ${g}`;
+      };
+      const getRunnerUp = (g) => {
+        if ((actQ[g]||[]).length > 1) return actQ[g][1];
+        const s = calcStandings(g, actMR[g]);
+        return s[1]?.name || `Runner-up Group ${g}`;
+      };
+      // Get best 8 thirds
+      let allThirds = [];
+      GROUP_KEYS.forEach(g => {
+        const t = (actQ[g]||[])[2] || calcStandings(g, actMR[g])[2]?.name;
+        if (t) allThirds.push({ name: t, group: g });
+      });
+      const top8 = allThirds.slice(0, 8);
+      const thirdByGroup = {};
+      top8.forEach(t => { thirdByGroup[t.group] = t.name; });
+      const combinationKey = top8.map(t => t.group).sort().join('');
+      const mapping = THIRD_PLACE_MAP[combinationKey];
+      const SLOT_ORDER_IN_R32 = [3, 5, 2, 4, 0, 7, 1, 6];
+      let thirdSlotIdx = 0;
+      const getTeam = (label) => {
+        if (label.startsWith('Winner Group '))    return getWinner(label.slice(-1));
+        if (label.startsWith('Runner-up Group ')) return getRunnerUp(label.slice(-1));
+        if (label.startsWith('3rd Group ')) {
+          const slotIdx = SLOT_ORDER_IN_R32[thirdSlotIdx++];
+          if (mapping?.[slotIdx]) return thirdByGroup[mapping[slotIdx]] || label;
+          return top8[thirdSlotIdx - 1]?.name || label;
+        }
+        return label;
+      };
+      const builtR32 = R32_SLOTS.map(label => getTeam(label));
+      actualKO = { ...actual.knockout, r32: builtR32 };
+      setActual(prev => ({ ...prev, knockout: { ...prev.knockout, r32: builtR32 } }));
+    }
+
+    // Count penalties: how many prediction slots differ from actual
+    const penaltyCost = syncStage ? (() => {
+      const actualSlots = actualKO[syncStage] || [];
+      const predSlots   = prediction.knockout[syncStage] || [];
+      return actualSlots.filter((team, i) =>
+        team && !isSlotLabel(team) && team !== 'TBD' && predSlots[i] !== team
+      ).length;
+    })() : 0;
+
+    // ── AUTO-SNAPSHOT current prediction picks before sync overwrites them ──
+    // This is what gets compared against actual results for scoring/penalties
+    if (syncStage) {
+      const winnerKey = syncStage; // the array we're about to overwrite
+      const currentPicks = [...(prediction.knockout[winnerKey] || [])];
+      // Only snapshot if there are real picks (not all TBD)
+      if (currentPicks.some(t => t && !isSlotLabel(t) && t !== 'TBD')) {
+        // The lock key corresponds to the round that just finished
+        // e.g. we're syncing 'r16' (R32 winners) → lock key is 'r32'
+        const lockKey = stage; // stage = 'r32', syncStage = 'r16'
+        setLockedPredictions(prev => new Map([...prev, [lockKey, currentPicks]]));
+      }
+    }
+
+    // Mark stage as confirmed
+    const dismissCount = dismissedPrompts.get(stage) || 0;
+    if (dismissCount > 0) {
+      setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + dismissCount }));
+      const next = new Map(dismissedPrompts);
+      next.delete(stage);
+      setDismissedPrompts(next);
+    }
+
+    // Auto-sync prediction bracket with actual for the next stage
+    // Also clear future rounds that may have been based on wrong teams,
+    // BUT preserve picks that are still correct (team still in the tournament)
+    if (syncStage && actualKO[syncStage]) {
+      const actualSlots = actualKO[syncStage];
+      const predSlots   = prediction.knockout[syncStage] || [];
+      const newSlots = actualSlots.map((team, i) => {
+        if (team && !isSlotLabel(team) && team !== 'TBD') return team;
+        return predSlots[i] || 'TBD';
+      });
+
+      // When syncing r32 (groups confirmed), the R32 matches haven't been played yet
+      // so clear all KO winner arrays — r16, qf, sf, final
+      // For other stages, only clear rounds after the synced stage
+      let updatedFuture = {};
+      if (syncStage === 'r32') {
+        // Clear everything beyond r32 — none of those matches have been played
+        updatedFuture = {
+          r16: Array(16).fill('TBD'),
+          qf:  Array(8).fill('TBD'),
+          sf:  Array(4).fill('TBD'),
+          final: ['TBD', 'TBD'],
+          third: ['TBD', 'TBD'],
+        };
+      } else {
+        // Build set of teams still in the tournament
+        const stillIn = new Set(newSlots.filter(t => t && !isSlotLabel(t) && t !== 'TBD'));
+        const allFutureStages = ['r16', 'qf', 'sf'];
+        const syncIdx = allFutureStages.indexOf(syncStage);
+        const futuresToClear = syncIdx >= 0 ? allFutureStages.slice(syncIdx + 1) : [];
+        futuresToClear.forEach(fs => {
+          const slots = prediction.knockout[fs] || [];
+          updatedFuture[fs] = slots.map(t =>
+            (t && !isSlotLabel(t) && t !== 'TBD' && !stillIn.has(t)) ? 'TBD' : t
+          );
+        });
+      }
+
+      const newWinner = updatedFuture.final ? 'TBD' : (prediction.knockout.winner);
+      const newThird  = updatedFuture.third  ? 'TBD' : (prediction.knockout.thirdPlace);
+
+      setPrediction(prev => ({
+        ...prev,
+        knockout: {
+          ...prev.knockout,
+          [syncStage]: newSlots,
+          ...updatedFuture,
+          winner: newWinner,
+          thirdPlace: newThird,
+        }
+      }));
+      if (penaltyCost > 0) {
+        setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + penaltyCost }));
+      }
+    }
+
     setStagePrompt(prev => ({ ...prev, step: 'notify', penaltyCost }));
+    setNotifiedStages(prev => new Set([...prev, stage]));
   };
 
   const handleStageGoBack = () => {
-    // User wants to fix results — dismiss the prompt and remember so it doesn't re-fire
-    // It will re-show if they subsequently change any results (clearing the dismissed state)
-    if (stagePrompt) setDismissedPrompts(prev => new Set([...prev, stagePrompt.stage]));
+    if (stagePrompt) {
+      setDismissedPrompts(prev => {
+        const next = new Map(prev);
+        next.set(stagePrompt.stage, (next.get(stagePrompt.stage) || 0) + 1);
+        return next;
+      });
+      // Remove from notified so re-confirm prompt can fire after dismissing
+      setNotifiedStages(prev => {
+        const next = new Set(prev);
+        next.delete(stagePrompt.stage);
+        return next;
+      });
+    }
     setStagePrompt(null);
   };
 
@@ -1713,7 +2041,7 @@ export default function App() {
 
     // Simple mode: a group counts only when all 4 positions are ranked (qualifiers has 4 entries... 
     // actually we only need top 3 minimum to be meaningful — require at least 2 qualifiers per group)
-    const hasCompleteGroup = Object.values(actual.qualifiers).some(v => v?.length >= 2);
+    const hasCompleteGroup = Object.values(actual.qualifiers).some(v => v?.length >= 3);
 
     // KO: a round counts when at least one real team (not TBD/slot label) has advanced
     const hasKO = actual.knockout.r16.some(t => t && !isSlotLabel(t)) ||
@@ -1726,8 +2054,10 @@ export default function App() {
   const livePoints = (() => {
     if (!hasActualData()) return null;
     const matchMode = predScoreMode ? 'score' : 'wdl';
-    const { totalEarned } = buildComparison(prediction, actual, matchMode, lockState.penaltyPoints);
-    return totalEarned;
+    // Pass 0 penalty to buildComparison to get raw earned points,
+    // then subtract the stored penalty separately — simpler and more reliable
+    const { totalEarned } = buildComparison(prediction, actual, matchMode, 0, lockedPredictions);
+    return totalEarned - (lockState.penaltyPoints || 0);
   })();
 
   return (
@@ -1739,6 +2069,7 @@ export default function App() {
         onGoBack={handleStageGoBack}
         onGoToPredict={handleStageNotifyDone}
         penaltyCost={stagePrompt?.penaltyCost || 0}
+        needsBracketBuild={false}
       />
 
       <div className="hero">
@@ -1757,7 +2088,9 @@ export default function App() {
               setPredScoreMode(false); setActScoreMode(false);
               setConfirmedStages(new Set());
               setStagePrompt(null);
-              setDismissedPrompts(new Set());
+              setDismissedPrompts(new Map());
+              setNotifiedStages(new Set());
+              setLockedPredictions(new Map());
             }
           }}>
           🗑 Reset
@@ -1769,11 +2102,8 @@ export default function App() {
         <div className="points-bar">
           <span className="points-bar-label">Your score</span>
           <span className={`points-bar-value ${livePoints < 0 ? 'points-negative' : ''}`}>
-            {livePoints < 0 ? livePoints : `+${livePoints}`} pts
+            {livePoints > 0 ? `+${livePoints}` : livePoints} pts
           </span>
-          {lockState.penaltyPoints > 0 && (
-            <span className="points-bar-penalty">incl. −{lockState.penaltyPoints} penalty</span>
-          )}
         </div>
       )}
 
@@ -1834,23 +2164,36 @@ export default function App() {
             <div className="update-banner-info">
               <span className="update-banner-icon">⚠️</span>
               <div>
-                <div className="update-banner-title">Update your {nextLabel} predictions</div>
+                <div className="update-banner-title">Your {nextLabel} bracket has been updated</div>
                 <div className="update-banner-sub">
                   {cost > 0
-                    ? `Syncing your bracket costs ${cost} penalty point${cost !== 1 ? 's' : ''}. Click below to update automatically.`
-                    : `Your predictions already match the actual bracket — no penalty!`}
+                    ? `${cost} penalty point${cost !== 1 ? 's were' : ' was'} deducted for slots that differed from your original predictions.`
+                    : `Your predictions matched the actual bracket — no penalty points deducted! 🎉`}
                 </div>
               </div>
             </div>
-            <button className="lock-btn fill-btn" onClick={() => handleFillFromActual(nextStage)}>
-              📥 Sync {nextLabel} bracket{cost > 0 ? ` (−${cost}pts)` : ' (free)'}
-            </button>
           </div>
         );
       })()}
 
-      {/* Live fetch panel */}
-      {activeTab === 'actual' && showLiveFetch && <LiveFetchPanel onApplyResults={handleApplyLiveResults} />}
+      {/* Re-confirm button for dismissed stage prompts */}
+      {activeTab === 'actual' && (() => {
+        const dismissedStages = [...dismissedPrompts.keys()];
+        if (dismissedStages.length === 0) return null;
+        return dismissedStages.map(stage => {
+          const count = dismissedPrompts.get(stage) || 0;
+          const label = STAGE_FULL_LABELS[stage] || stage;
+          return (
+            <div key={stage} className="reconfirm-banner">
+              <span>⚠️ You went back to fix <strong>{label}</strong> results. Ready to re-confirm?</span>
+              <button className="modal-btn modal-btn-primary" style={{padding:'8px 16px',fontSize:13}}
+                onClick={() => setStagePrompt({ stage, step: 'confirm', reconfirmPenalty: count })}>
+                📋 Re-confirm {label} {count > 0 ? `(−${count}pt penalty)` : ''}
+              </button>
+            </div>
+          );
+        });
+      })()}
 
       {/* Comparison panel — only shown when actual data exists */}
       {activeTab === 'actual' && showComparison && (
@@ -1860,6 +2203,7 @@ export default function App() {
             predGroupMode={predGroupMode} actGroupMode={actGroupMode}
             penaltyPoints={lockState.penaltyPoints}
             scoreMode={predScoreMode}
+            lockedPredictions={lockedPredictions}
           />
         ) : (
           <div className="comparison-panel">
@@ -1963,14 +2307,17 @@ export default function App() {
             {section === 'groups' && (
               <GroupStage data={data} onSetQualifiers={setQualifiers} onUpdateMatch={updateMatch}
                 onBuildKnockout={buildKnockout} groupMode={groupMode} scoreMode={scoreMode}
-                locked={activeTab === 'prediction' && !groupEditable} />
+                locked={activeTab === 'prediction' && !groupEditable}
+                groupStageConfirmed={confirmedStages.has('groups')} />
             )}
             {section === 'knockout' && (
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
                 lockedRounds={activeTab === 'prediction' ? koLockedRounds : new Set()}
                 onPenalty={activeTab === 'prediction' ? handlePenalty : null}
                 isPenaltyActive={activeTab === 'prediction' && currentPhase.phase === 'window'}
-                scoreMode={scoreMode} />
+                scoreMode={scoreMode}
+                onClearDismissed={activeTab === 'actual' ? handleClearDismissed : null}
+                confirmedStages={confirmedStages} />
             )}
           </div>
         </>
