@@ -215,7 +215,48 @@ const emptyLockState = () => ({
   windowAcknowledged: {},  // { r32: true } — user has acknowledged the fill prompt for each stage
 });
 
-// ─── Persistence ──────────────────────────────────────────────────────────────
+// ─── Stage locking by schedule ─────────────────────────────────────────────────
+
+// isPredictionStageLocked and isActualStageLocked use STAGE_ORDER
+
+function isPredictionStageLocked(stage, now) {
+  if (now < SCHEDULE.groups.start) return false;
+
+  const stageIdx = STAGE_ORDER.indexOf(stage);
+  if (stageIdx < 0) return true;
+
+  const s = SCHEDULE[stage];
+  if (!s) return true;
+
+  if (now >= s.start) return true;
+
+  if (stageIdx === 0) return false;
+
+  const prevKey = STAGE_ORDER[stageIdx - 1];
+  const prev = SCHEDULE[prevKey];
+  if (!prev) return true;
+
+  if (now >= prev.end && now < s.start) return false;
+
+  return true;
+}
+
+function isActualStageLocked(stage, now, confirmedStages) {
+  // Before tournament: all actual results locked
+  if (now < SCHEDULE.groups.start) return true;
+
+  const s = SCHEDULE[stage];
+  if (!s) return true;
+
+  // Before stage starts: locked
+  if (now < s.start) return true;
+
+  // After confirmed: locked permanently
+  if (confirmedStages?.has(stage)) return true;
+
+  // During or after stage window: editable
+  return false;
+}
 
 // Bump this number whenever the shape of saved data changes in a breaking way.
 // The migrate() function below must handle upgrading from all previous versions.
@@ -296,8 +337,8 @@ function loadFromStorage() {
       prediction:     emptyData(),
       actual:         emptyData(),
       lockState:      emptyLockState(),
-      predGroupMode:  'simple',
-      actGroupMode:   'simple',
+      predGroupMode:  'advanced',
+      actGroupMode:   'advanced',
       predScoreMode:  false,
       actScoreMode:   false,
     };
@@ -468,16 +509,18 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints, l
       if (!pw || !aw || isSlotLabel(pw) || isSlotLabel(aw)) continue;
       const correct = pw === aw;
 
-      // Score bonus — scores are stored against the source round key
+      // Score bonus — use prediction scores; fall back to actual scores if pred not entered
       const scoreKey = `${key}-${i}`;
-      const ps = (prediction.knockout.koScores || {})[scoreKey];
-      const as = (actual.knockout.koScores     || {})[scoreKey];
+      const ps = (prediction.knockout.koScores || {})[scoreKey] || (actual.knockout.koScores || {})[scoreKey];
+      const as = (actual.knockout.koScores || {})[scoreKey];
       const phRaw = ps?.h, paRaw = ps?.a, ahRaw = as?.h, aaRaw = as?.a;
       const phV = (phRaw !== '' && phRaw !== null && phRaw !== undefined) ? Number(phRaw) : NaN;
       const paV = (paRaw !== '' && paRaw !== null && paRaw !== undefined) ? Number(paRaw) : NaN;
       const ahV = (ahRaw !== '' && ahRaw !== null && ahRaw !== undefined) ? Number(ahRaw) : NaN;
       const aaV = (aaRaw !== '' && aaRaw !== null && aaRaw !== undefined) ? Number(aaRaw) : NaN;
-      const hasScores = !isNaN(phV) && !isNaN(paV) && !isNaN(ahV) && !isNaN(aaV);
+      // Only award score bonus if prediction had its OWN score (not just copying actual)
+      const predHadOwnScore = !!((prediction.knockout.koScores || {})[scoreKey]);
+      const hasScores = predHadOwnScore && !isNaN(phV) && !isNaN(paV) && !isNaN(ahV) && !isNaN(aaV);
       const exactScore = hasScores && phV === ahV && paV === aaV;
 
       if (advancedMatchMode === 'score' && hasScores) {
@@ -582,21 +625,11 @@ function ScoringGuide() {
       {open && (
         <div className="scoring-guide-body">
           <div className="sg-section">
-            <div className="sg-heading">🏟️ Group Stage — always (Simple &amp; Advanced)</div>
+            <div className="sg-heading">🏟️ Group Stage</div>
             <div className="sg-rows">
               <div className="sg-row"><span className="sg-pts">1pt</span><span>Correct position for each team in the group table (1st, 2nd, 3rd or 4th)</span></div>
-            </div>
-          </div>
-          <div className="sg-section">
-            <div className="sg-heading">🏟️ Group Stage — Advanced mode only (on top of above)</div>
-            <div className="sg-rows">
-              <div className="sg-row"><span className="sg-pts">+1pt</span><span>Correct match outcome (W / D / L) per game</span></div>
-            </div>
-          </div>
-          <div className="sg-section">
-            <div className="sg-heading">🏟️ Group Stage — Advanced + Scores (on top of above)</div>
-            <div className="sg-rows">
-              <div className="sg-row"><span className="sg-pts sg-bonus">+3pts</span><span>Correct exact score — stacks with the +1pt outcome point (4pts total for a perfect score prediction)</span></div>
+              <div className="sg-row"><span className="sg-pts">+1pt</span><span>Correct match outcome (W / D / L) per game — W/D/L and Scores modes</span></div>
+              <div className="sg-row"><span className="sg-pts sg-bonus">+3pts</span><span>Correct exact score — stacks with the +1pt outcome point (4pts total for a perfect score) — Scores mode only</span></div>
             </div>
           </div>
           <div className="sg-section">
@@ -1040,12 +1073,10 @@ function SimpleGroupCard({ groupKey, qualifiers, onToggle, locked }) {
   const teams = GROUPS[groupKey];
   const q = qualifiers[groupKey] || [];
 
-  // Count how many groups have a 3rd place ranked across ALL groups
-  // to determine if this group's 3rd place is in the top 8
   const allThirds = GROUP_KEYS.map(gk => qualifiers[gk]?.[2]).filter(Boolean);
   const thisThird = q[2];
-  const thirdRank = thisThird ? allThirds.indexOf(thisThird) : -1; // 0-indexed rank among all thirds
-  const thirdQualifies = thirdRank >= 0 && thirdRank < 8; // top 8 thirds qualify
+  const thirdRank = thisThird ? allThirds.indexOf(thisThird) : -1;
+  const thirdQualifies = thirdRank >= 0 && thirdRank < 8;
   const sorted = [...teams].sort((a, b) => {
     const pa = q.indexOf(a), pb = q.indexOf(b);
     if (pa >= 0 && pb >= 0) return pa - pb;
@@ -1177,11 +1208,8 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
     GROUP_KEYS.forEach(gk => { d[gk] = calcStandings(gk, data.matchResults[gk]).map(t=>t.name); });
     return d;
   };
-  const allTop2Done = groupMode === 'advanced'
-    ? GROUP_KEYS.every(g => calcStandings(g, data.matchResults[g]).some(t => t.pts > 0))
-    : GROUP_KEYS.every(g => (q[g]||[]).length >= 2);
-  const best3Count = groupMode === 'advanced' ? 8 : Object.values(q).filter(v=>v&&v[2]).length;
-  const canBuild = !locked && (groupMode === 'advanced' ? true : (allTop2Done && best3Count >= 8));
+  const allTop2Done = GROUP_KEYS.every(g => calcStandings(g, data.matchResults[g]).some(t => t.pts > 0));
+  const canBuild = !locked && allTop2Done;
 
   const handleToggle = (gk, team) => {
     const cur = [...(q[gk]||[])];
@@ -1270,13 +1298,9 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
       )}
       <div className="group-grid">
         {GROUP_KEYS.map(gk =>
-          groupMode === 'simple'
-            ? <SimpleGroupCard key={gk} groupKey={gk} qualifiers={q} onToggle={handleToggle} locked={locked}/>
-            : <AdvancedGroupCard key={gk} groupKey={gk} matchResults={data.matchResults} onUpdateMatch={onUpdateMatch} scoreMode={scoreMode} locked={locked}/>
+          <AdvancedGroupCard key={gk} groupKey={gk} matchResults={data.matchResults} onUpdateMatch={onUpdateMatch} scoreMode={scoreMode} locked={locked}/>
         )}
       </div>
-      {!locked && groupMode === 'simple' && !allTop2Done && <p className="build-hint">Select top 2 from every group to unlock the knockout stage.</p>}
-      {!locked && groupMode === 'simple' && allTop2Done && best3Count < 8 && <p className="build-hint">{best3Count}/8 best 3rd-place teams. Pick {8-best3Count} more.</p>}
       {!locked && !groupStageConfirmed && <button className={`build-btn ${canBuild?'active':'disabled'}`} onClick={()=>canBuild&&handleBuild()}>Build knockout bracket →</button>}
       {groupStageConfirmed && <div className="info-bar" style={{color:'#2a6a2a',background:'rgba(42,106,42,0.07)',border:'0.5px solid rgba(42,106,42,0.2)'}}>✅ Group stage confirmed — knockout bracket locked in.</div>}
     </div>
@@ -1285,7 +1309,7 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
 
 // ─── Knockout Stage ────────────────────────────────────────────────────────────
 
-function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode, isPenaltyActive, onClearDismissed, confirmedStages }) {
+function KnockoutStage({ knockout, onUpdate, lockedRounds, scoreMode, onClearDismissed, confirmedStages }) {
   const ko = knockout;
   const isRoundDone = (key) => confirmedStages?.has(key) || false;
 
@@ -1300,19 +1324,15 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
   const advanceTeam = (roundKey, matchIdx, team) => {
     const isLocked = lockedRounds && lockedRounds.has(roundKey);
     if (isLocked) return;
-    const prev = ko[roundKey][matchIdx];
-    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     const arr = [...ko[roundKey]];
     arr[matchIdx] = team;
     onUpdate({ ...ko, [roundKey]: arr });
-    // Tell parent to re-check this round's completion
     if (onClearDismissed) onClearDismissed(roundKey);
   };
 
   const advSF = (matchIdx, team) => {
     if (lockedRounds?.has('sf')) return;
     const slotA = matchIdx * 2, slotB = matchIdx * 2 + 1;
-    if (isPenaltyActive && ko.final[matchIdx] !== 'TBD' && ko.final[matchIdx] !== team && onPenalty) onPenalty();
     const loser = [ko.sf[slotA], ko.sf[slotB]].find(x => x !== team && !isSlotLabel(x)) || 'TBD';
     const final = [...ko.final]; final[matchIdx] = team;
     const third = [...ko.third]; third[matchIdx] = loser;
@@ -1322,14 +1342,11 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, onPenalty, scoreMode,
 
   const advFinal = (team) => {
     if (lockedRounds?.has('final')) return;
-    if (isPenaltyActive && ko.winner !== 'TBD' && ko.winner !== team && onPenalty) onPenalty();
     onUpdate({ ...ko, winner: team });
     if (onClearDismissed) onClearDismissed('final');
   };
 
   const advThird = (team) => {
-    const prev = ko.thirdPlace;
-    if (isPenaltyActive && prev !== 'TBD' && prev !== team && onPenalty) onPenalty();
     onUpdate({ ...ko, thirdPlace: team });
   };
 
@@ -1612,8 +1629,8 @@ export default function App() {
 
   const [prediction, setPrediction]         = useState(saved?.prediction     || emptyData());
   const [actual, setActual]                 = useState(saved?.actual          || emptyData());
-  const [predGroupMode, setPredGroupMode]   = useState(saved?.predGroupMode  || 'simple');
-  const [actGroupMode,  setActGroupMode]    = useState(saved?.actGroupMode   || 'simple');
+  const [predGroupMode, setPredGroupMode]   = useState(saved?.predGroupMode  || 'advanced');
+  const [actGroupMode,  setActGroupMode]    = useState(saved?.actGroupMode   || 'advanced');
   const [predScoreMode, setPredScoreMode]   = useState(saved?.predScoreMode  || false);
   const [actScoreMode,  setActScoreMode]    = useState(saved?.actScoreMode   || false);
   const [lockState, setLockState]           = useState(saved?.lockState      || emptyLockState());
@@ -1652,27 +1669,28 @@ export default function App() {
 
   // Is a given stage editable right now on the prediction tab?
   const isStageEditable = (stage) => {
-    if (activeTab !== 'prediction') return true;
-    // Once a stage has been confirmed on actual tab, lock it on prediction tab
+    if (activeTab === 'actual') {
+      return !isActualStageLocked(stage, phaseNow, confirmedStages);
+    }
+    // Prediction tab
+    if (isPredictionStageLocked(stage, phaseNow)) return false;
     if (confirmedStages.has(stage)) return false;
-    const tp = getTournamentPhase(phaseNow);
-    if (tp.phase === 'pre') return !lockState.userLocked;
-    if (tp.phase === 'running') return false;
-    if (tp.phase === 'window') return stage === tp.nextStage;
-    if (tp.phase === 'complete') return false;
-    return false;
+    if (phaseNow < SCHEDULE.groups.start) return !lockState.userLocked;
+    return true;
   };
 
+  // Per-stage editability for actual tab
   const groupEditable    = isStageEditable('groups');
   const koEditableStages = new Set(STAGE_ORDER.filter(s => isStageEditable(s)));
-  // Invert: locked rounds = rounds that are NOT editable
-  const koLockedRounds = new Set(STAGE_ORDER.filter(s => !koEditableStages.has(s)));
+  const koLockedRounds   = new Set(STAGE_ORDER.filter(s => !koEditableStages.has(s)));
 
-  const setQualifiers = (gk, teams) => setData(prev => ({ ...prev, qualifiers: { ...prev.qualifiers, [gk]: teams } }));
+  const setQualifiers = (gk, teams) => {
+    if (!isStageEditable('groups')) return;
+    setData(prev => ({ ...prev, qualifiers: { ...prev.qualifiers, [gk]: teams } }));
+  };
   const updateMatch = (gk, idx, res) => {
+    if (!isStageEditable('groups')) return;
     setData(prev => ({ ...prev, matchResults: { ...prev.matchResults, [gk]: { ...(prev.matchResults[gk] || {}), [idx]: res } } }));
-    // Clear only the 'groups' dismissed prompt when a group result changes
-    // so the confirm dialog can re-appear once all groups are complete
     if (activeTab === 'actual') {
       setDismissedPrompts(prev => {
         if (!prev.has('groups')) return prev;
@@ -1769,28 +1787,14 @@ export default function App() {
   };
 
   const buildKnockout = (r32) => {
-    // On prediction tab during a window: check if this differs from what's locked
-    // and warn about penalties before proceeding
-    if (activeTab === 'prediction' && currentPhase.phase === 'window') {
-      const existingR32 = prediction.knockout.r32;
-      const changes = r32.filter((team, i) =>
-        !isSlotLabel(team) && team !== 'TBD' && existingR32[i] !== team
-      ).length;
-      if (changes > 0) {
-        if (!window.confirm(
-          `Building this bracket will change ${changes} slot${changes !== 1 ? 's' : ''} from your locked predictions, costing ${changes} penalty point${changes !== 1 ? 's' : ''}.\n\nDo you want to continue?`
-        )) return;
-        setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + changes }));
-      }
-    }
     setData(prev => ({ ...prev, knockout: { ...emptyKO(), r32 } }));
     setSection('knockout');
   };
 
-  const updateKnockout = (ko) => setData(prev => ({ ...prev, knockout: ko }));
-
-  // Penalty: called when user changes a KO pick (only during free-edit window, fill-from-actual)
-  const handlePenalty = () => setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + 1 }));
+  const updateKnockout = (ko) => {
+    if (activeTab === 'prediction' && phaseNow >= SCHEDULE.groups.start) return;
+    setData(prev => ({ ...prev, knockout: ko }));
+  };
 
   // User manually locks/unlocks (pre-tournament only)
   const handleUserLock = (locked) => setLockState(prev => ({ ...prev, userLocked: locked }));
@@ -1916,21 +1920,79 @@ export default function App() {
       ).length;
     })() : 0;
 
-    // ── AUTO-SNAPSHOT current prediction picks before sync overwrites them ──
-    // This is what gets compared against actual results for scoring/penalties
+    // ── AUTO-SNAPSHOT and SYNC ──
     if (syncStage) {
-      const winnerKey = syncStage; // the array we're about to overwrite
+      const winnerKey = syncStage;
       const currentPicks = [...(prediction.knockout[winnerKey] || [])];
-      // Only snapshot if there are real picks (not all TBD)
       if (currentPicks.some(t => t && !isSlotLabel(t) && t !== 'TBD')) {
-        // The lock key corresponds to the round that just finished
-        // e.g. we're syncing 'r16' (R32 winners) → lock key is 'r32'
-        const lockKey = stage; // stage = 'r32', syncStage = 'r16'
-        setLockedPredictions(prev => new Map([...prev, [lockKey, currentPicks]]));
+        setLockedPredictions(prev => new Map([...prev, [stage, currentPicks]]));
+      }
+
+      // Build merged koScores: keep user's prediction scores, copy actual scores
+      // for this stage only if user didn't enter their own
+      const actualScores = actualKO.koScores || {};
+      const predScores   = prediction.knockout.koScores || {};
+      const mergedScores = { ...predScores };
+      const round = KO_ROUNDS.find(r => r.key === stage);
+      if (round) {
+        for (let i = 0; i < round.matchCount; i++) {
+          const sk = `${stage}-${i}`;
+          if (actualScores[sk] && !predScores[sk]) mergedScores[sk] = actualScores[sk];
+        }
+      }
+
+      if (syncStage && actualKO[syncStage]) {
+        const actualSlots = actualKO[syncStage];
+        const predSlots   = prediction.knockout[syncStage] || [];
+        const newSlots = actualSlots.map((team, i) => {
+          if (team && !isSlotLabel(team) && team !== 'TBD') return team;
+          return predSlots[i] || 'TBD';
+        });
+
+        let updatedFuture = {};
+        if (syncStage === 'r32') {
+          updatedFuture = {
+            r16: Array(16).fill('TBD'),
+            qf:  Array(8).fill('TBD'),
+            sf:  Array(4).fill('TBD'),
+            final: ['TBD', 'TBD'],
+            third: ['TBD', 'TBD'],
+          };
+        } else {
+          const stillIn = new Set(newSlots.filter(t => t && !isSlotLabel(t) && t !== 'TBD'));
+          const allFutureStages = ['r16', 'qf', 'sf'];
+          const syncIdx = allFutureStages.indexOf(syncStage);
+          const futuresToClear = syncIdx >= 0 ? allFutureStages.slice(syncIdx + 1) : [];
+          futuresToClear.forEach(fs => {
+            const slots = prediction.knockout[fs] || [];
+            updatedFuture[fs] = slots.map(t =>
+              (t && !isSlotLabel(t) && t !== 'TBD' && !stillIn.has(t)) ? 'TBD' : t
+            );
+          });
+        }
+
+        const newWinner = updatedFuture.final ? 'TBD' : prediction.knockout.winner;
+        const newThird  = updatedFuture.third  ? 'TBD' : prediction.knockout.thirdPlace;
+
+        // Single atomic setPrediction — preserves koScores
+        setPrediction(prev => ({
+          ...prev,
+          knockout: {
+            ...prev.knockout,
+            [syncStage]: newSlots,
+            ...updatedFuture,
+            winner: newWinner,
+            thirdPlace: newThird,
+            koScores: mergedScores, // always use merged scores
+          }
+        }));
+
+        if (penaltyCost > 0) {
+          setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + penaltyCost }));
+        }
       }
     }
-
-    // Mark stage as confirmed
+    // Mark stage confirmed and show notify modal
     const dismissCount = dismissedPrompts.get(stage) || 0;
     if (dismissCount > 0) {
       setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + dismissCount }));
@@ -1938,63 +2000,7 @@ export default function App() {
       next.delete(stage);
       setDismissedPrompts(next);
     }
-
-    // Auto-sync prediction bracket with actual for the next stage
-    // Also clear future rounds that may have been based on wrong teams,
-    // BUT preserve picks that are still correct (team still in the tournament)
-    if (syncStage && actualKO[syncStage]) {
-      const actualSlots = actualKO[syncStage];
-      const predSlots   = prediction.knockout[syncStage] || [];
-      const newSlots = actualSlots.map((team, i) => {
-        if (team && !isSlotLabel(team) && team !== 'TBD') return team;
-        return predSlots[i] || 'TBD';
-      });
-
-      // When syncing r32 (groups confirmed), the R32 matches haven't been played yet
-      // so clear all KO winner arrays — r16, qf, sf, final
-      // For other stages, only clear rounds after the synced stage
-      let updatedFuture = {};
-      if (syncStage === 'r32') {
-        // Clear everything beyond r32 — none of those matches have been played
-        updatedFuture = {
-          r16: Array(16).fill('TBD'),
-          qf:  Array(8).fill('TBD'),
-          sf:  Array(4).fill('TBD'),
-          final: ['TBD', 'TBD'],
-          third: ['TBD', 'TBD'],
-        };
-      } else {
-        // Build set of teams still in the tournament
-        const stillIn = new Set(newSlots.filter(t => t && !isSlotLabel(t) && t !== 'TBD'));
-        const allFutureStages = ['r16', 'qf', 'sf'];
-        const syncIdx = allFutureStages.indexOf(syncStage);
-        const futuresToClear = syncIdx >= 0 ? allFutureStages.slice(syncIdx + 1) : [];
-        futuresToClear.forEach(fs => {
-          const slots = prediction.knockout[fs] || [];
-          updatedFuture[fs] = slots.map(t =>
-            (t && !isSlotLabel(t) && t !== 'TBD' && !stillIn.has(t)) ? 'TBD' : t
-          );
-        });
-      }
-
-      const newWinner = updatedFuture.final ? 'TBD' : (prediction.knockout.winner);
-      const newThird  = updatedFuture.third  ? 'TBD' : (prediction.knockout.thirdPlace);
-
-      setPrediction(prev => ({
-        ...prev,
-        knockout: {
-          ...prev.knockout,
-          [syncStage]: newSlots,
-          ...updatedFuture,
-          winner: newWinner,
-          thirdPlace: newThird,
-        }
-      }));
-      if (penaltyCost > 0) {
-        setLockState(prev => ({ ...prev, penaltyPoints: prev.penaltyPoints + penaltyCost }));
-      }
-    }
-
+    setConfirmedStages(prev => new Set([...prev, stage]));
     setStagePrompt(prev => ({ ...prev, step: 'notify', penaltyCost }));
     setNotifiedStages(prev => new Set([...prev, stage]));
   };
@@ -2084,7 +2090,7 @@ export default function App() {
               localStorage.removeItem(STORAGE_KEY);
               setPrediction(emptyData()); setActual(emptyData());
               setLockState(emptyLockState());
-              setPredGroupMode('simple'); setActGroupMode('simple');
+              setPredGroupMode('advanced'); setActGroupMode('advanced');
               setPredScoreMode(false); setActScoreMode(false);
               setConfirmedStages(new Set());
               setStagePrompt(null);
@@ -2229,28 +2235,22 @@ export default function App() {
             </div>
             {/* Mode picker — redesigned as a clear 3-option selector */}
             <div className="mode-picker">
-              {section === 'groups' && (
-                <>
-                  <button
-                    className={`mode-option ${groupMode === 'simple' && !scoreMode ? 'mode-active' : ''}`}
-                    onClick={() => { setGMode('simple'); setSMode(false); }}
-                    title="Pick group positions by clicking — no match details needed. 1pt per correct position.">
-                    Simple
-                  </button>
-                  <button
-                    className={`mode-option ${groupMode === 'advanced' && !scoreMode ? 'mode-active' : ''}`}
-                    onClick={() => { setGMode('advanced'); setSMode(false); }}
-                    title="Predict W/D/L for each match. +1pt per correct result on top of position points.">
-                    + W/D/L
-                  </button>
-                  <button
-                    className={`mode-option ${groupMode === 'advanced' && scoreMode ? 'mode-active' : ''}`}
-                    onClick={() => { setGMode('advanced'); setSMode(true); }}
-                    title="Predict exact scores. +3pts per correct score on top of W/D/L and position points.">
-                    + Scores
-                  </button>
-                </>
-              )}
+            {section === 'groups' && (
+              <>
+                <button
+                  className={`mode-option ${!scoreMode ? 'mode-active' : ''}`}
+                  onClick={() => { setGMode('advanced'); setSMode(false); }}
+                  title="Predict W/D/L for each match. +1pt per correct result on top of position points.">
+                  W/D/L
+                </button>
+                <button
+                  className={`mode-option ${scoreMode ? 'mode-active' : ''}`}
+                  onClick={() => { setGMode('advanced'); setSMode(true); }}
+                  title="Predict exact scores. +3pts per correct score on top of W/D/L and position points.">
+                  + Scores
+                </button>
+              </>
+            )}
               {section === 'knockout' && (
                 <>
                   <button
@@ -2272,23 +2272,14 @@ export default function App() {
 
           {/* Mode description strip */}
           <div className="mode-desc">
-            {section === 'groups' && groupMode === 'simple' && !scoreMode && (
+            {section === 'groups' && !scoreMode && (
               <span>
-                <strong>Simple</strong> — click teams to rank 1st, 2nd, and best 3rd in each group.
-                Your first 8 marked 3rd-place teams are the ones that advance — <strong>order matters</strong>, so rank your best 3rd-place teams first.
-                Earn <strong>1pt</strong> per correct group position.
+                <strong>W/D/L</strong> — predict the result of every group match. Standings update automatically. Earn <strong>1pt</strong> per correct group position <strong>+ 1pt</strong> per correct match result.
               </span>
             )}
-            {section === 'groups' && groupMode === 'advanced' && !scoreMode && (
+            {section === 'groups' && scoreMode && (
               <span>
-                <strong>Advanced W/D/L</strong> — predict the result of every group match.
-                Standings update automatically. Earn <strong>1pt</strong> per correct group position <strong>+ 1pt</strong> per correct match result.
-              </span>
-            )}
-            {section === 'groups' && groupMode === 'advanced' && scoreMode && (
-              <span>
-                <strong>Advanced Scores</strong> — predict the exact scoreline of every group match.
-                Earn <strong>1pt</strong> per correct position <strong>+ 1pt</strong> per correct result <strong>+ 3pts</strong> per exact score (4pts total for a perfect match).
+                <strong>Scores</strong> — predict the exact scoreline of every group match. Earn <strong>1pt</strong> per correct position <strong>+ 1pt</strong> per correct result <strong>+ 3pts</strong> per exact score (4pts total for a perfect match).
               </span>
             )}
             {section === 'knockout' && !scoreMode && (
@@ -2307,14 +2298,12 @@ export default function App() {
             {section === 'groups' && (
               <GroupStage data={data} onSetQualifiers={setQualifiers} onUpdateMatch={updateMatch}
                 onBuildKnockout={buildKnockout} groupMode={groupMode} scoreMode={scoreMode}
-                locked={activeTab === 'prediction' && !groupEditable}
+                locked={!groupEditable}
                 groupStageConfirmed={confirmedStages.has('groups')} />
             )}
             {section === 'knockout' && (
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
-                lockedRounds={activeTab === 'prediction' ? koLockedRounds : new Set()}
-                onPenalty={activeTab === 'prediction' ? handlePenalty : null}
-                isPenaltyActive={activeTab === 'prediction' && currentPhase.phase === 'window'}
+                lockedRounds={koLockedRounds}
                 scoreMode={scoreMode}
                 onClearDismissed={activeTab === 'actual' ? handleClearDismissed : null}
                 confirmedStages={confirmedStages} />
