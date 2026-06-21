@@ -2,6 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import THIRD_PLACE_MAP from './thirdPlaceMap';
 
+// Visible build identifier — bump this on every deploy so you can instantly
+// confirm (by eye, on any device) whether it's running the latest code.
+// Shown at the bottom of every page.
+const BUILD_TAG = 'b17-2026-06-21';
+
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
 const GROUPS = {
@@ -322,6 +327,11 @@ function migrate(saved) {
       version: 3,
     };
   }
+  // Migration: upgrade simple mode to advanced
+  // Anyone who used the app before simple mode was removed gets upgraded automatically
+  if (data.predGroupMode === 'simple') data.predGroupMode = 'advanced';
+  if (data.actGroupMode  === 'simple') data.actGroupMode  = 'advanced';
+
   return data;
 }
 
@@ -420,12 +430,9 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints, l
   const add = (item) => { items.push(item); totalEarned += item.earned; totalPossible += item.possible; };
 
   GROUP_KEYS.forEach((gk) => {
-    const predIsSimple   = !!(prediction.qualifiers[gk]?.length > 0);
-    const actualIsSimple = !!(actual.qualifiers[gk]?.length > 0);
-    const predOrder   = predIsSimple   ? prediction.qualifiers[gk]   : calcStandings(gk, prediction.matchResults[gk]).map(t => t.name);
-    const actualOrder = actualIsSimple ? actual.qualifiers[gk]       : calcStandings(gk, actual.matchResults[gk]).map(t => t.name);
+    const predOrder   = calcStandings(gk, prediction.matchResults[gk]).map(t => t.name);
+    const actualOrder = calcStandings(gk, actual.matchResults[gk]).map(t => t.name);
 
-    // Count complete matches in this group
     const completeMatchCount = Object.values(actual.matchResults[gk] || {}).filter(r => {
       if (!r) return false;
       const hg = r.homeGoals, ag = r.awayGoals;
@@ -435,11 +442,8 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints, l
       return bothScores || !!r.result;
     }).length;
 
-    // Group positions only compared when actual side has ALL 6 matches complete (advanced)
-    // or at least 2 qualifiers selected (simple)
-    const actualGroupComplete = actualIsSimple
-      ? (actual.qualifiers[gk]?.length >= 3) // 3 clicked = 4th is implicit
-      : completeMatchCount >= 6;
+    // Group positions only compared when all 6 matches are complete
+    const actualGroupComplete = completeMatchCount >= 6;
 
     if (!actualGroupComplete) {
       // Still process match results below even if group not complete
@@ -456,38 +460,34 @@ function buildComparison(prediction, actual, advancedMatchMode, penaltyPoints, l
       });
     }
 
-    if (!predIsSimple && !actualIsSimple) {
-      groupMatches(GROUPS[gk]).forEach(([home, away], i) => {
-        const p = getOutcome((prediction.matchResults[gk] || {})[i]);
-        const a = getOutcome((actual.matchResults[gk]     || {})[i]);
-        // Only score if both sides have a complete result
-        if (!p.outcome || !a.outcome) return;
-        // For scores mode, require both sides to have numeric scores entered
-        if (advancedMatchMode === 'score') {
-          if (p.hg === null || a.hg === null) return;
-        }
-        const exact = p.outcome === a.outcome && p.hg === a.hg && p.ag === a.ag && p.hg !== null;
-        const match = p.outcome === a.outcome;
-        const lbl   = { home: `${home} win`, away: `${away} win`, draw: 'Draw' };
-        const sstr  = (r) => r.hg !== null ? `${r.hg}–${r.ag}` : r.outcome;
+    // Always compare match results using advanced mode (simple mode removed)
+    // Only skip if both sides have no match data at all
+    groupMatches(GROUPS[gk]).forEach(([home, away], i) => {
+      const p = getOutcome((prediction.matchResults[gk] || {})[i]);
+      const a = getOutcome((actual.matchResults[gk]     || {})[i]);
+      if (!p.outcome || !a.outcome) return;
+      if (advancedMatchMode === 'score') {
+        if (p.hg === null || a.hg === null) return;
+      }
+      const exact = p.outcome === a.outcome && p.hg === a.hg && p.ag === a.ag && p.hg !== null;
+      const match = p.outcome === a.outcome;
+      const lbl   = { home: `${home} win`, away: `${away} win`, draw: 'Draw' };
+      const sstr  = (r) => r.hg !== null ? `${r.hg}–${r.ag}` : r.outcome;
 
-        if (advancedMatchMode === 'score') {
-          const earned   = match ? (exact ? 4 : 1) : 0;
-          const possible = 4;
-          add({
-            category: 'Match Result', group: gk,
-            description: `${home} vs ${away} — predicted ${sstr(p)}, actual ${sstr(a)}`,
-            correct: match, exactMatch: exact, earned, possible,
-          });
-        } else {
-          add({
-            category: 'Match Result', group: gk,
-            description: `${home} vs ${away} — predicted ${lbl[p.outcome]||p.outcome}, actual ${lbl[a.outcome]||a.outcome}`,
-            correct: match, exactMatch: exact, earned: match ? 1 : 0, possible: 1,
-          });
-        }
-      });
-    }
+      if (advancedMatchMode === 'score') {
+        add({
+          category: 'Match Result', group: gk,
+          description: `${home} vs ${away} — predicted ${sstr(p)}, actual ${sstr(a)}`,
+          correct: match, exactMatch: exact, earned: match ? (exact ? 4 : 1) : 0, possible: 4,
+        });
+      } else {
+        add({
+          category: 'Match Result', group: gk,
+          description: `${home} vs ${away} — predicted ${lbl[p.outcome]||p.outcome}, actual ${lbl[a.outcome]||a.outcome}`,
+          correct: match, exactMatch: exact, earned: match ? 1 : 0, possible: 1,
+        });
+      }
+    });
   });
 
   // KO round winner mapping: winners of each round are stored in the NEXT round's array
@@ -2084,23 +2084,60 @@ export default function App() {
           <div className="hero-title">FIFA World Cup 2026</div>
           <div className="hero-sub">48 teams · 12 groups · R32 → R16 → QF → SF → Final + 3rd place</div>
         </div>
-        <button className="clear-data-btn" title="Clear all saved data and start fresh"
-          onClick={() => {
-            if (window.confirm('Clear all your predictions and results? This cannot be undone.')) {
-              localStorage.removeItem(STORAGE_KEY);
-              setPrediction(emptyData()); setActual(emptyData());
-              setLockState(emptyLockState());
-              setPredGroupMode('advanced'); setActGroupMode('advanced');
-              setPredScoreMode(false); setActScoreMode(false);
-              setConfirmedStages(new Set());
-              setStagePrompt(null);
-              setDismissedPrompts(new Map());
-              setNotifiedStages(new Set());
-              setLockedPredictions(new Map());
-            }
-          }}>
-          🗑 Reset
-        </button>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <button className="clear-data-btn" title="Export all your data to a file"
+            style={{background:'#1a3c5e',color:'#fff',borderColor:'#1a3c5e'}}
+            onClick={() => {
+              const data = localStorage.getItem(STORAGE_KEY);
+              if (!data) { alert('No data to export.'); return; }
+              const blob = new Blob([data], {type:'application/json'});
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url; a.download = 'wc2026-predictions.json';
+              a.click(); URL.revokeObjectURL(url);
+            }}>
+            📤 Export
+          </button>
+          <label className="clear-data-btn" title="Import predictions from a file"
+            style={{background:'#2a6a2a',color:'#fff',borderColor:'#2a6a2a',cursor:'pointer',display:'inline-block'}}>
+            📥 Import
+            <input type="file" accept=".json" style={{display:'none'}}
+              onChange={(e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                  try {
+                    const parsed = JSON.parse(ev.target.result);
+                    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file');
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+                    window.location.reload();
+                  } catch {
+                    alert('Invalid file — could not import predictions.');
+                  }
+                };
+                reader.readAsText(file);
+              }}
+            />
+          </label>
+          <button className="clear-data-btn" title="Clear all saved data and start fresh"
+            onClick={() => {
+              if (window.confirm('Clear all your predictions and results? This cannot be undone.')) {
+                localStorage.removeItem(STORAGE_KEY);
+                setPrediction(emptyData()); setActual(emptyData());
+                setLockState(emptyLockState());
+                setPredGroupMode('advanced'); setActGroupMode('advanced');
+                setPredScoreMode(false); setActScoreMode(false);
+                setConfirmedStages(new Set());
+                setStagePrompt(null);
+                setDismissedPrompts(new Map());
+                setNotifiedStages(new Set());
+                setLockedPredictions(new Map());
+              }
+            }}>
+            🗑 Reset
+          </button>
+        </div>
       </div>
 
       {/* Points bar — shown when actual data exists */}
@@ -2138,7 +2175,23 @@ export default function App() {
         )}
       </div>
 
-      {/* Tournament status banner — prediction tab only */}
+      {/* Export reminder banner — shown during tournament if no export has been done */}
+      {phaseNow >= SCHEDULE.groups.start && !localStorage.getItem('wc2026_exported') && (
+        <div style={{background:'rgba(139,100,0,0.1)',border:'0.5px solid rgba(139,100,0,0.3)',borderRadius:10,padding:'10px 14px',margin:'8px 0',fontSize:13,color:'#7a5500',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+          <span>⚠️ <strong>Back up your predictions</strong> — if you clear your browser cache you'll lose everything. Tap Export to save a backup file.</span>
+          <button style={{padding:'6px 12px',background:'#1a3c5e',color:'#fff',border:'none',borderRadius:6,fontSize:12,cursor:'pointer'}}
+            onClick={() => {
+              const data = localStorage.getItem(STORAGE_KEY);
+              if (!data) return;
+              const blob = new Blob([data], {type:'application/json'});
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url; a.download = 'wc2026-predictions.json';
+              a.click(); URL.revokeObjectURL(url);
+              localStorage.setItem('wc2026_exported', '1');
+            }}>📤 Export now</button>
+        </div>
+      )}
       {activeTab === 'prediction' && (
         <TournamentStatusBanner
           tournPhase={currentPhase}
@@ -2311,6 +2364,9 @@ export default function App() {
           </div>
         </>
       )}
+      <div style={{textAlign:'center', fontSize:11, color:'#999', padding:'14px 0 6px'}}>
+        build {BUILD_TAG}
+      </div>
     </div>
   );
 }
