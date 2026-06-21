@@ -5,7 +5,7 @@ import THIRD_PLACE_MAP from './thirdPlaceMap';
 // Visible build identifier — bump this on every deploy so you can instantly
 // confirm (by eye, on any device) whether it's running the latest code.
 // Shown at the bottom of every page.
-const BUILD_TAG = 'b17-2026-06-21';
+const BUILD_TAG = 'b18-2026-06-21';
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -2084,60 +2084,23 @@ export default function App() {
           <div className="hero-title">FIFA World Cup 2026</div>
           <div className="hero-sub">48 teams · 12 groups · R32 → R16 → QF → SF → Final + 3rd place</div>
         </div>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <button className="clear-data-btn" title="Export all your data to a file"
-            style={{background:'#1a3c5e',color:'#fff',borderColor:'#1a3c5e'}}
-            onClick={() => {
-              const data = localStorage.getItem(STORAGE_KEY);
-              if (!data) { alert('No data to export.'); return; }
-              const blob = new Blob([data], {type:'application/json'});
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url; a.download = 'wc2026-predictions.json';
-              a.click(); URL.revokeObjectURL(url);
-            }}>
-            📤 Export
-          </button>
-          <label className="clear-data-btn" title="Import predictions from a file"
-            style={{background:'#2a6a2a',color:'#fff',borderColor:'#2a6a2a',cursor:'pointer',display:'inline-block'}}>
-            📥 Import
-            <input type="file" accept=".json" style={{display:'none'}}
-              onChange={(e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                  try {
-                    const parsed = JSON.parse(ev.target.result);
-                    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file');
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-                    window.location.reload();
-                  } catch {
-                    alert('Invalid file — could not import predictions.');
-                  }
-                };
-                reader.readAsText(file);
-              }}
-            />
-          </label>
-          <button className="clear-data-btn" title="Clear all saved data and start fresh"
-            onClick={() => {
-              if (window.confirm('Clear all your predictions and results? This cannot be undone.')) {
-                localStorage.removeItem(STORAGE_KEY);
-                setPrediction(emptyData()); setActual(emptyData());
-                setLockState(emptyLockState());
-                setPredGroupMode('advanced'); setActGroupMode('advanced');
-                setPredScoreMode(false); setActScoreMode(false);
-                setConfirmedStages(new Set());
-                setStagePrompt(null);
-                setDismissedPrompts(new Map());
-                setNotifiedStages(new Set());
-                setLockedPredictions(new Map());
-              }
-            }}>
-            🗑 Reset
-          </button>
-        </div>
+        <button className="clear-data-btn" title="Clear all saved data and start fresh"
+          onClick={() => {
+            if (window.confirm('Clear all your predictions and results? This cannot be undone.')) {
+              localStorage.removeItem(STORAGE_KEY);
+              setPrediction(emptyData()); setActual(emptyData());
+              setLockState(emptyLockState());
+              setPredGroupMode('advanced'); setActGroupMode('advanced');
+              setPredScoreMode(false); setActScoreMode(false);
+              setConfirmedStages(new Set());
+              setStagePrompt(null);
+              setDismissedPrompts(new Map());
+              setNotifiedStages(new Set());
+              setLockedPredictions(new Map());
+            }
+          }}>
+          🗑 Reset
+        </button>
       </div>
 
       {/* Points bar — shown when actual data exists */}
@@ -2175,23 +2138,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Export reminder banner — shown during tournament if no export has been done */}
-      {phaseNow >= SCHEDULE.groups.start && !localStorage.getItem('wc2026_exported') && (
-        <div style={{background:'rgba(139,100,0,0.1)',border:'0.5px solid rgba(139,100,0,0.3)',borderRadius:10,padding:'10px 14px',margin:'8px 0',fontSize:13,color:'#7a5500',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
-          <span>⚠️ <strong>Back up your predictions</strong> — if you clear your browser cache you'll lose everything. Tap Export to save a backup file.</span>
-          <button style={{padding:'6px 12px',background:'#1a3c5e',color:'#fff',border:'none',borderRadius:6,fontSize:12,cursor:'pointer'}}
-            onClick={() => {
-              const data = localStorage.getItem(STORAGE_KEY);
-              if (!data) return;
-              const blob = new Blob([data], {type:'application/json'});
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url; a.download = 'wc2026-predictions.json';
-              a.click(); URL.revokeObjectURL(url);
-              localStorage.setItem('wc2026_exported', '1');
-            }}>📤 Export now</button>
-        </div>
-      )}
       {activeTab === 'prediction' && (
         <TournamentStatusBanner
           tournPhase={currentPhase}
