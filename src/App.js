@@ -225,25 +225,22 @@ const emptyLockState = () => ({
 // isPredictionStageLocked and isActualStageLocked use STAGE_ORDER
 
 function isPredictionStageLocked(stage, now) {
-  if (now < SCHEDULE.groups.start) return false;
-
-  const stageIdx = STAGE_ORDER.indexOf(stage);
-  if (stageIdx < 0) return true;
-
   const s = SCHEDULE[stage];
   if (!s) return true;
 
+  // Locked if this stage has already started (past or currently running)
   if (now >= s.start) return true;
 
-  if (stageIdx === 0) return false;
+  // Locked if a LATER stage is currently running
+  // (can't edit R16 predictions while R32 is being played)
+  for (const key of STAGE_ORDER) {
+    const sched = SCHEDULE[key];
+    if (!sched) continue;
+    if (now >= sched.start && now < sched.end) return true; // a stage is running right now
+  }
 
-  const prevKey = STAGE_ORDER[stageIdx - 1];
-  const prev = SCHEDULE[prevKey];
-  if (!prev) return true;
-
-  if (now >= prev.end && now < s.start) return false;
-
-  return true;
+  // Otherwise unlocked — covers pre-tournament AND all gap periods
+  return false;
 }
 
 function isActualStageLocked(stage, now, confirmedStages) {
