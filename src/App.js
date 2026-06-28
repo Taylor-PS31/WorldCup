@@ -1386,19 +1386,19 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, scoreMode, onClearDis
   const mkR32 = (s) => Array.from({length:8},(_,i) => {
     const mi=s*8+i; const lk=isRoundLocked('r32');
     return { node:<MatchSlot teamA={ko.r32[mi*2]} teamB={ko.r32[mi*2+1]} label={`R32 ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('r16',mi,t)} locked={lk}
+      onSelectWinner={t=>{if(!lk){const arr=[...ko.r16];arr[mi]=t;onUpdate({...ko,r16:arr});if(onClearDismissed)onClearDismissed('r32');}} } locked={lk}
       scoreMode={scoreMode} score={getScore('r32',mi)} onScoreChange={v=>updateScore('r32',mi,v)}/>, gap:gap0 };
   });
   const mkR16 = (s) => Array.from({length:4},(_,i) => {
     const mi=s*4+i; const lk=isRoundLocked('r16');
     return { node:<MatchSlot teamA={ko.r16[mi*2]} teamB={ko.r16[mi*2+1]} label={`R16 ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('qf',mi,t)} locked={lk}
+      onSelectWinner={t=>{if(!lk){const arr=[...ko.qf];arr[mi]=t;onUpdate({...ko,qf:arr});if(onClearDismissed)onClearDismissed('r16');}} } locked={lk}
       scoreMode={scoreMode} score={getScore('r16',mi)} onScoreChange={v=>updateScore('r16',mi,v)}/>, gap:gap1 };
   });
   const mkQF = (s) => Array.from({length:2},(_,i) => {
     const mi=s*2+i; const lk=isRoundLocked('qf');
     return { node:<MatchSlot teamA={ko.qf[mi*2]} teamB={ko.qf[mi*2+1]} label={`QF ${mi+1}`}
-      onSelectWinner={t=>advanceTeam('sf',mi,t)} locked={lk}
+      onSelectWinner={t=>{if(!lk){const arr=[...ko.sf];arr[mi]=t;onUpdate({...ko,sf:arr});if(onClearDismissed)onClearDismissed('qf');}} } locked={lk}
       scoreMode={scoreMode} score={getScore('qf',mi)} onScoreChange={v=>updateScore('qf',mi,v)}/>, gap:gap2 };
   });
   const mkSF = (s) => [{
@@ -1848,7 +1848,6 @@ export default function App() {
   };
 
   const updateKnockout = (ko) => {
-    if (activeTab === 'prediction' && phaseNow >= SCHEDULE.groups.start) return;
     setData(prev => ({ ...prev, knockout: ko }));
   };
 
