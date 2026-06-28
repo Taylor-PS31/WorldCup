@@ -5,7 +5,7 @@ import THIRD_PLACE_MAP from './thirdPlaceMap';
 // Visible build identifier — bump this on every deploy so you can instantly
 // confirm (by eye, on any device) whether it's running the latest code.
 // Shown at the bottom of every page.
-const BUILD_TAG = 'b20-2026-06-28';
+const BUILD_TAG = 'b22-2026-06-28';
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -999,14 +999,17 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
     if (!onScoreChange) return;
     const newScore = { ...(score||{}), h, a };
     onScoreChange(newScore);
-    // Auto-advance winner once both scores committed and unambiguous
+    // Auto-advance winner AFTER score is saved - use setTimeout to ensure
+    // state update from onScoreChange has been queued first
     if (onSelectWinner && !locked) {
       const hNum = Number(h), aNum = Number(a);
       const hOk = h !== '' && !isNaN(hNum);
       const aOk = a !== '' && !isNaN(aNum);
       if (hOk && aOk && hNum !== aNum) {
         const winner = hNum > aNum ? teamA : teamB;
-        if (winner && !isSlotLabel(winner)) onSelectWinner(winner);
+        if (winner && !isSlotLabel(winner)) {
+          setTimeout(() => onSelectWinner(winner), 0);
+        }
       }
     }
   };
@@ -1317,14 +1320,18 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, onR
 
 // ─── Knockout Stage ────────────────────────────────────────────────────────────
 
-function KnockoutStage({ knockout, onUpdate, lockedRounds, scoreMode, onClearDismissed, confirmedStages }) {
+function KnockoutStage({ knockout, onUpdate, onUpdateScore, onUpdateWinner, lockedRounds, scoreMode, onClearDismissed, confirmedStages }) {
   const ko = knockout;
   const isRoundDone = (key) => confirmedStages?.has(key) || false;
 
   const updateScore = (roundKey, matchIdx, val) => {
-    const scoreKey = `${roundKey}-${matchIdx}`;
-    const newScores = { ...(ko.koScores || {}), [scoreKey]: val };
-    onUpdate({ ...ko, koScores: newScores });
+    if (onUpdateScore) {
+      onUpdateScore(roundKey, matchIdx, val);
+    } else {
+      const scoreKey = `${roundKey}-${matchIdx}`;
+      const newScores = { ...(ko.koScores || {}), [scoreKey]: val };
+      onUpdate({ ...ko, koScores: newScores });
+    }
   };
 
   // advanceTeam: matchIdx is the MATCH number (0-15 for R32), not the slot index
@@ -1386,19 +1393,22 @@ function KnockoutStage({ knockout, onUpdate, lockedRounds, scoreMode, onClearDis
   const mkR32 = (s) => Array.from({length:8},(_,i) => {
     const mi=s*8+i; const lk=isRoundLocked('r32');
     return { node:<MatchSlot teamA={ko.r32[mi*2]} teamB={ko.r32[mi*2+1]} label={`R32 ${mi+1}`}
-      onSelectWinner={t=>{if(!lk){const arr=[...ko.r16];arr[mi]=t;onUpdate({...ko,r16:arr});if(onClearDismissed)onClearDismissed('r32');}} } locked={lk}
+      onSelectWinner={t=>{if(!lk){ onUpdateWinner(prev=>{ const arr=[...prev.r16]; arr[mi]=t; return {...prev,r16:arr}; },'r32'); }}}
+      locked={lk}
       scoreMode={scoreMode} score={getScore('r32',mi)} onScoreChange={v=>updateScore('r32',mi,v)}/>, gap:gap0 };
   });
   const mkR16 = (s) => Array.from({length:4},(_,i) => {
     const mi=s*4+i; const lk=isRoundLocked('r16');
     return { node:<MatchSlot teamA={ko.r16[mi*2]} teamB={ko.r16[mi*2+1]} label={`R16 ${mi+1}`}
-      onSelectWinner={t=>{if(!lk){const arr=[...ko.qf];arr[mi]=t;onUpdate({...ko,qf:arr});if(onClearDismissed)onClearDismissed('r16');}} } locked={lk}
+      onSelectWinner={t=>{if(!lk){ onUpdateWinner(prev=>{ const arr=[...prev.qf]; arr[mi]=t; return {...prev,qf:arr}; },'r16'); }}}
+      locked={lk}
       scoreMode={scoreMode} score={getScore('r16',mi)} onScoreChange={v=>updateScore('r16',mi,v)}/>, gap:gap1 };
   });
   const mkQF = (s) => Array.from({length:2},(_,i) => {
     const mi=s*2+i; const lk=isRoundLocked('qf');
     return { node:<MatchSlot teamA={ko.qf[mi*2]} teamB={ko.qf[mi*2+1]} label={`QF ${mi+1}`}
-      onSelectWinner={t=>{if(!lk){const arr=[...ko.sf];arr[mi]=t;onUpdate({...ko,sf:arr});if(onClearDismissed)onClearDismissed('qf');}} } locked={lk}
+      onSelectWinner={t=>{if(!lk){ onUpdateWinner(prev=>{ const arr=[...prev.sf]; arr[mi]=t; return {...prev,sf:arr}; },'qf'); }}}
+      locked={lk}
       scoreMode={scoreMode} score={getScore('qf',mi)} onScoreChange={v=>updateScore('qf',mi,v)}/>, gap:gap2 };
   });
   const mkSF = (s) => [{
@@ -1849,6 +1859,22 @@ export default function App() {
 
   const updateKnockout = (ko) => {
     setData(prev => ({ ...prev, knockout: ko }));
+  };
+
+  const updateKnockoutScore = (roundKey, matchIdx, val) => {
+    setData(prev => {
+      const ko = prev.knockout;
+      const scoreKey = `${roundKey}-${matchIdx}`;
+      const newScores = { ...(ko.koScores || {}), [scoreKey]: val };
+      return { ...prev, knockout: { ...ko, koScores: newScores } };
+    });
+  };
+
+  const updateKnockoutWinner = (updaterFn, roundKey) => {
+    setData(prev => {
+      const newKO = updaterFn(prev.knockout);
+      return { ...prev, knockout: newKO };
+    });
   };
 
   // User manually locks/unlocks (pre-tournament only)
@@ -2361,6 +2387,8 @@ export default function App() {
             )}
             {section === 'knockout' && (
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
+                onUpdateScore={updateKnockoutScore}
+                onUpdateWinner={updateKnockoutWinner}
                 lockedRounds={koLockedRounds}
                 scoreMode={scoreMode}
                 onClearDismissed={activeTab === 'actual' ? handleClearDismissed : null}

@@ -10,7 +10,7 @@ root.render(<React.StrictMode><App /></React.StrictMode>);
 // This is the single source of truth for cache-busting. Unlike Date.now(),
 // it stays the same across page loads of the SAME deployed code, so the
 // service worker correctly detects "no change" vs "new version".
-const APP_VERSION = 'v19-2026-06-30';
+const APP_VERSION = 'v21-2026-06-28';
 
 // Register service worker with the fixed version above.
 // If the version differs from what's stored, force ONE reload to guarantee
