@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import THIRD_PLACE_MAP from './thirdPlaceMap';
 
 // Visible build identifier — bump this on every deploy so you can instantly
 // confirm (by eye, on any device) whether it's running the latest code.
 // Shown at the bottom of every page.
-const BUILD_TAG = 'b18-2026-06-21';
+const BUILD_TAG = 'b20-2026-06-28';
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -1201,7 +1201,7 @@ function AdvancedGroupCard({ groupKey, matchResults, onUpdateMatch, scoreMode, l
 
 // ─── Group Stage wrapper ───────────────────────────────────────────────────────
 
-function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, groupMode, scoreMode, locked, groupStageConfirmed }) {
+function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, onRebuildR32, groupMode, scoreMode, locked, groupStageConfirmed, activeTab }) {
   const q = data.qualifiers;
   const getAdvQ = () => {
     const d = {};
@@ -1302,7 +1302,15 @@ function GroupStage({ data, onSetQualifiers, onUpdateMatch, onBuildKnockout, gro
         )}
       </div>
       {!locked && !groupStageConfirmed && <button className={`build-btn ${canBuild?'active':'disabled'}`} onClick={()=>canBuild&&handleBuild()}>Build knockout bracket →</button>}
-      {groupStageConfirmed && <div className="info-bar" style={{color:'#2a6a2a',background:'rgba(42,106,42,0.07)',border:'0.5px solid rgba(42,106,42,0.2)'}}>✅ Group stage confirmed — knockout bracket locked in.</div>}
+      {groupStageConfirmed && <div className="info-bar" style={{color:'#2a6a2a',background:'rgba(42,106,42,0.07)',border:'0.5px solid rgba(42,106,42,0.2)',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+        <span>✅ Group stage confirmed — knockout bracket locked in.</span>
+        {activeTab === 'actual' && onRebuildR32 && (
+          <button style={{padding:'5px 12px',fontSize:12,background:'#1a3c5e',color:'#fff',border:'none',borderRadius:6,cursor:'pointer'}}
+            onClick={onRebuildR32}>
+            🔄 Rebuild R32 from standings
+          </button>
+        )}
+      </div>}
     </div>
   );
 }
@@ -1629,6 +1637,8 @@ export default function App() {
 
   const [prediction, setPrediction]         = useState(saved?.prediction     || emptyData());
   const [actual, setActual]                 = useState(saved?.actual          || emptyData());
+  const actualRef = useRef(actual);
+  useEffect(() => { actualRef.current = actual; }, [actual]);
   const [predGroupMode, setPredGroupMode]   = useState(saved?.predGroupMode  || 'advanced');
   const [actGroupMode,  setActGroupMode]    = useState(saved?.actGroupMode   || 'advanced');
   const [predScoreMode, setPredScoreMode]   = useState(saved?.predScoreMode  || false);
@@ -1786,6 +1796,52 @@ export default function App() {
     }).length;
   };
 
+  const handleRebuildR32 = () => {
+    const freshActualMR = actualRef.current.matchResults;
+    const getWinner   = (g) => calcStandings(g, freshActualMR[g])[0]?.name || `Winner Group ${g}`;
+    const getRunnerUp = (g) => calcStandings(g, freshActualMR[g])[1]?.name || `Runner-up Group ${g}`;
+    let allThirds = [];
+    GROUP_KEYS.forEach(g => {
+      const s = calcStandings(g, freshActualMR[g]);
+      if (s[2] && s[2].name) allThirds.push({ name: s[2].name, group: g, pts: s[2].pts, gf: s[2].gf, ga: s[2].ga });
+    });
+    allThirds.sort((a, b) => b.pts - a.pts || (b.gf - b.ga) - (a.gf - a.ga) || b.gf - a.gf);
+    const top8 = allThirds.slice(0, 8);
+    const thirdByGroup = {};
+    top8.forEach(t => { thirdByGroup[t.group] = t.name; });
+    const combinationKey = top8.map(t => t.group).sort().join('');
+    const mapping = THIRD_PLACE_MAP[combinationKey];
+    const SLOT_ORDER_IN_R32 = [3, 5, 2, 4, 0, 7, 1, 6];
+    let thirdSlotIdx = 0;
+    const getTeam = (label) => {
+      if (label.startsWith('Winner Group '))    return getWinner(label.slice(-1));
+      if (label.startsWith('Runner-up Group ')) return getRunnerUp(label.slice(-1));
+      if (label.startsWith('3rd Group ')) {
+        const slotIdx = SLOT_ORDER_IN_R32[thirdSlotIdx++];
+        if (mapping?.[slotIdx]) return thirdByGroup[mapping[slotIdx]] || label;
+        return top8[thirdSlotIdx - 1]?.name || label;
+      }
+      return label;
+    };
+    const builtR32 = R32_SLOTS.map(label => getTeam(label));
+    setActual(prev => ({ ...prev, knockout: { ...prev.knockout, r32: builtR32 } }));
+    // Also update prediction R32 to match new actual R32 so user can re-predict
+    setPrediction(prev => ({
+      ...prev,
+      knockout: {
+        ...prev.knockout,
+        r32: builtR32,
+        r16: Array(16).fill('TBD'),
+        qf:  Array(8).fill('TBD'),
+        sf:  Array(4).fill('TBD'),
+        final: ['TBD','TBD'],
+        third: ['TBD','TBD'],
+        winner: 'TBD',
+        thirdPlace: 'TBD',
+      }
+    }));
+  };
+
   const buildKnockout = (r32) => {
     setData(prev => ({ ...prev, knockout: { ...emptyKO(), r32 } }));
     setSection('knockout');
@@ -1866,29 +1922,30 @@ export default function App() {
     const syncMap = { groups: 'r32', r32: 'r16', r16: 'qf', qf: 'sf', sf: 'final' };
     const syncStage = syncMap[stage] || null;
 
-    // For groups stage, auto-build actual R32 from actual qualifiers if not built yet
+    // For groups stage, ALWAYS rebuild actual R32 from actual matchResults
+    // Read from localStorage directly to avoid stale React state closure
     let actualKO = actual.knockout;
-    if (stage === 'groups' && actual.knockout.r32.every(t => isSlotLabel(t))) {
-      // Simple mode: build from actual.qualifiers
-      const actQ = actual.qualifiers;
-      const actMR = actual.matchResults;
-      // Use advanced standings if available, else simple qualifiers
-      const getWinner = (g) => {
-        if ((actQ[g]||[]).length > 0) return actQ[g][0];
-        const s = calcStandings(g, actMR[g]);
-        return s[0]?.name || `Winner Group ${g}`;
-      };
-      const getRunnerUp = (g) => {
-        if ((actQ[g]||[]).length > 1) return actQ[g][1];
-        const s = calcStandings(g, actMR[g]);
-        return s[1]?.name || `Runner-up Group ${g}`;
-      };
-      // Get best 8 thirds
+    if (stage === 'groups') {
+      // Use ref to get freshest actual state — avoids stale closure bug
+      const freshActual = actualRef.current;
+      const freshActualMR = freshActual.matchResults;
+
+      const getWinner   = (g) => calcStandings(g, freshActualMR[g])[0]?.name || `Winner Group ${g}`;
+      const getRunnerUp = (g) => calcStandings(g, freshActualMR[g])[1]?.name || `Runner-up Group ${g}`;
+
+      // Get best 8 thirds by FIFA tiebreaker: pts → GD → GF
+      // Always use calcStandings from matchResults — never qualifiers (legacy data)
       let allThirds = [];
       GROUP_KEYS.forEach(g => {
-        const t = (actQ[g]||[])[2] || calcStandings(g, actMR[g])[2]?.name;
-        if (t) allThirds.push({ name: t, group: g });
+        const s = calcStandings(g, freshActualMR[g]);
+        // s[2] is definitively the 3rd place team by standings calculation
+        if (s[2] && s[2].name) allThirds.push({ name: s[2].name, group: g, pts: s[2].pts, gf: s[2].gf, ga: s[2].ga });
       });
+      allThirds.sort((a, b) =>
+        b.pts - a.pts ||
+        (b.gf - b.ga) - (a.gf - a.ga) ||
+        b.gf - a.gf
+      );
       const top8 = allThirds.slice(0, 8);
       const thirdByGroup = {};
       top8.forEach(t => { thirdByGroup[t.group] = t.name; });
@@ -1896,6 +1953,7 @@ export default function App() {
       const mapping = THIRD_PLACE_MAP[combinationKey];
       const SLOT_ORDER_IN_R32 = [3, 5, 2, 4, 0, 7, 1, 6];
       let thirdSlotIdx = 0;
+
       const getTeam = (label) => {
         if (label.startsWith('Winner Group '))    return getWinner(label.slice(-1));
         if (label.startsWith('Runner-up Group ')) return getRunnerUp(label.slice(-1));
@@ -1906,8 +1964,9 @@ export default function App() {
         }
         return label;
       };
+
       const builtR32 = R32_SLOTS.map(label => getTeam(label));
-      actualKO = { ...actual.knockout, r32: builtR32 };
+      actualKO = { ...freshActual.knockout, r32: builtR32 };
       setActual(prev => ({ ...prev, knockout: { ...prev.knockout, r32: builtR32 } }));
     }
 
@@ -1974,7 +2033,6 @@ export default function App() {
         const newWinner = updatedFuture.final ? 'TBD' : prediction.knockout.winner;
         const newThird  = updatedFuture.third  ? 'TBD' : prediction.knockout.thirdPlace;
 
-        // Single atomic setPrediction — preserves koScores
         setPrediction(prev => ({
           ...prev,
           knockout: {
@@ -1983,7 +2041,7 @@ export default function App() {
             ...updatedFuture,
             winner: newWinner,
             thirdPlace: newThird,
-            koScores: mergedScores, // always use merged scores
+            koScores: mergedScores,
           }
         }));
 
@@ -2296,9 +2354,11 @@ export default function App() {
           <div className="content">
             {section === 'groups' && (
               <GroupStage data={data} onSetQualifiers={setQualifiers} onUpdateMatch={updateMatch}
-                onBuildKnockout={buildKnockout} groupMode={groupMode} scoreMode={scoreMode}
+                onBuildKnockout={buildKnockout} onRebuildR32={activeTab === 'actual' ? handleRebuildR32 : null}
+                groupMode={groupMode} scoreMode={scoreMode}
                 locked={!groupEditable}
-                groupStageConfirmed={confirmedStages.has('groups')} />
+                groupStageConfirmed={confirmedStages.has('groups')}
+                activeTab={activeTab} />
             )}
             {section === 'knockout' && (
               <KnockoutStage knockout={data.knockout} onUpdate={updateKnockout}
