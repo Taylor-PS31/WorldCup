@@ -1011,6 +1011,19 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
     }
   };
 
+  // Commit score on every change so navigating away never loses data
+  const handleHomeChange = (e) => {
+    const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+    setLocalH(v);
+    commitScore(v, localA);
+  };
+
+  const handleAwayChange = (e) => {
+    const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
+    setLocalA(v);
+    commitScore(localH, v);
+  };
+
   return (
     <div className="match-slot">
       {label && <div className="match-label">{label}</div>}
@@ -1035,12 +1048,7 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
             type="text" inputMode="numeric" pattern="[0-9]*"
             className="score-input" disabled={locked}
             value={localH} placeholder="0"
-            onChange={e => {
-              const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
-              setLocalH(v);
-              // Commit immediately if away score already filled
-              if (localA !== '' && v !== '') commitScore(v, localA);
-            }}
+            onChange={handleHomeChange}
             onBlur={() => commitScore(localH, localA)}
             onKeyDown={e => e.key === 'Enter' && commitScore(localH, localA)}
           />
@@ -1049,12 +1057,7 @@ function MatchSlot({ teamA, teamB, label, onSelectWinner, locked, scoreMode, sco
             type="text" inputMode="numeric" pattern="[0-9]*"
             className="score-input" disabled={locked}
             value={localA} placeholder="0"
-            onChange={e => {
-              const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 2);
-              setLocalA(v);
-              // Commit immediately if home score already filled
-              if (localH !== '' && v !== '') commitScore(localH, v);
-            }}
+            onChange={handleAwayChange}
             onBlur={() => commitScore(localH, localA)}
             onKeyDown={e => e.key === 'Enter' && commitScore(localH, localA)}
           />
